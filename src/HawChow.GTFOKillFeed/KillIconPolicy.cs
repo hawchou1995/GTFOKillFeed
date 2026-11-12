@@ -4,12 +4,6 @@ namespace HawChow.GTFOKillFeed;
 
 internal static class KillIconPolicy
 {
-	internal const string DisplayHead = "Head";
-
-	internal const string DisplayCard = "Card";
-
-	internal const KillIconDisplay DefaultDisplay = KillIconDisplay.Head;
-
 	internal const float DefaultLifetimeSeconds = 2.2f;
 
 	internal const float MinLifetimeSeconds = 0.4f;
@@ -43,38 +37,6 @@ internal static class KillIconPolicy
 	internal const string DefaultArmorPlateColor = "#E6AB57";
 
 	internal const int PreviewCombos = 9;
-
-	internal static KillIconDisplay ParseDisplay(string value)
-	{
-		if (string.IsNullOrWhiteSpace(value))
-		{
-			return KillIconDisplay.Head;
-		}
-		string text = value.Trim();
-		if (string.Equals(text, "Card", (StringComparison)5))
-		{
-			return KillIconDisplay.Card;
-		}
-		if (string.Equals(text, "Cards", (StringComparison)5))
-		{
-			return KillIconDisplay.Card;
-		}
-		return KillIconDisplay.Head;
-	}
-
-	internal static string DisplayToken(KillIconDisplay display)
-	{
-		if (display != KillIconDisplay.Card)
-		{
-			return "Head";
-		}
-		return "Card";
-	}
-
-	internal static bool UsesHeadIcons(KillIconDisplay display)
-	{
-		return display == KillIconDisplay.Head;
-	}
 
 	internal static float Lifetime(float configured)
 	{
@@ -192,20 +154,6 @@ internal static class KillIconPolicy
 		return 0f;
 	}
 
-	internal static bool ShouldDrawIcons(bool visible, KillIconDisplay display)
-	{
-		if (visible)
-		{
-			return UsesHeadIcons(display);
-		}
-		return false;
-	}
-
-	internal static bool ShouldQueueCardPreviews(KillIconDisplay display)
-	{
-		return !UsesHeadIcons(display);
-	}
-
 	internal static void PreviewCombo(int index, out KillTier tier, out KillFlight flight)
 	{
 		int num = ((index > 0) ? (index % 9) : 0);
@@ -213,28 +161,4 @@ internal static class KillIconPolicy
 		flight = (KillFlight)(num % 3);
 	}
 
-	internal static bool ShouldDrawCard(KillIconDisplay display, int iconToken, float iconExpiresAt, float now, bool iconPresent)
-	{
-		if (iconToken < 0)
-		{
-			return !UsesHeadIcons(display);
-		}
-		if (!UsesHeadIcons(display))
-		{
-			return true;
-		}
-		if (iconToken == 0)
-		{
-			return true;
-		}
-		if (!KillPolicy.IsFinite(now) || !KillPolicy.IsFinite(iconExpiresAt))
-		{
-			return true;
-		}
-		if (now >= iconExpiresAt)
-		{
-			return false;
-		}
-		return !iconPresent;
-	}
 }

@@ -12,8 +12,17 @@
 
 ## 0. 前置
 
+SDK 由仓库根的 `global.json` 锁定为 **6.0.428**（`rollForward = latestPatch`，允许同一
+6.0.4xx 特性带的更高补丁，不允许降级到更早的特性带）。用不匹配的 SDK 启动会立即报错，
+不会静默换用别的 SDK 生成不同 IL：
+
+```text
+Requested SDK version: 6.0.428
+A compatible .NET SDK was not found.
+```
+
 ```bash
-export DOTNET=/path/to/dotnet-6.0.x
+export DOTNET=/path/to/dotnet-sdk-6.0.428/dotnet   # 6.0.428 的 dotnet 可执行文件
 export GTFO_DIR=/path/to/Survival    # 只读，含 BepInEx/core、BepInEx/interop、BepInEx/unity-libs
 export KILLFEED_ZIP=/path/to/KillFeed-1.2.16.zip
 export SCRATCH=/path/to/scratch
@@ -70,7 +79,28 @@ git checkout v1.2.17
 "$DOTNET" run -c Release --no-build --project tests/KillFeed.Tests/KillFeed.Tests.csproj
 ```
 
-预期：视觉 364 项通过、ILGuard 0 failures、控制/联合测试 399 项通过（原控制 304 项门禁不变）。
+预期：`RESULT pass=424 fail=0`（视觉/呈现策略）、`ILGUARD failures=0`、`SUMMARY pass=405;fail=0`
+（控制/联合；原 304 项门禁不变，新增 6 条 `marker.submit.*` 提交门断言）。
+
+## 2b. 文档、版本与 SDK 门禁
+
+```bash
+python tools/verify_docs.py
+python tools/verify_docs.py --negative
+```
+
+`verify_docs.py` 把 README 的默认值直接绑到生产常量（`KillViewPolicy.DefaultCardEnabled/
+DefaultHeadEnabled/DefaultOpacity`、`HitSoundPolicy.Default*`、`SoundConfigPlan.*`）与
+`Config.Bind` 接线，并要求 README 和 `Plugin.cs` 的 cfg 描述里引用的每个仓库路径真的存在；
+同时校验 `global.json` 的 SDK 版本、`manifest.json`、`AssemblyInfo` 与 README/CHANGELOG 的版本一致。
+
+预期：`DOCGATE RESULT gates=16 failures=0`；`--negative` 输出
+`SUMMARY: all 7 negative controls raised the expected gate`（改 README 默认值、改坏
+README/cfg 里的路径、翻转生产默认值、改 `global.json`、改 manifest 版本，各自触发对应门禁）。
+
+`Release` 构建在 `src/GTFOKillFeed.csproj` 里关闭调试符号（`DebugType=none`、
+`DebugSymbols=false`），因此不生成 `.pdb`，DLL 内也没有 CodeView/PDB 路径。不要给 Release
+改回 `portable`；`Debug` 配置不受影响。原因与验证方式见 `docs/PRIVACY.md`。
 
 ## 3. 最终 DLL 对基线逐方法核对
 
@@ -84,8 +114,8 @@ python tools/verify_integration.py \
   --out "$SCRATCH/integration.json"
 ```
 
-预期：987/1082 方法，947 个共同方法的 Mono.Cecil `ildump` 文本相同（这不是原始 IL 字节
-比较，metadata token/offset 未单独证明），156 条预期差异逐条列在
+预期：987/1123 方法，947 个共同方法的 Mono.Cecil `ildump` 文本相同（这不是原始 IL 字节
+比较，metadata token/offset 未单独证明），197 条预期差异逐条列在
 `docs/INTEGRATION-DIFF.txt`，27 个嵌入资源完全相同。任何未列差异、失效允许项或资源变化
 都会失败。
 
@@ -102,3 +132,21 @@ python tools/verify_package.py \
 
 预期：17 个条目、12 个 PNG + OFL 与原包逐字节一致、27 个嵌入资源、manifest/程序集 1.2.17。
 ZIP 不含源码、PDB、游戏 DLL、`orig/`、缓存或用户日志。
+
+`package_release.py` 在写 ZIP 之前逐条目扫描（文本与二进制，含 PE CodeView 记录），命中本机
+绝对路径或绝对 PDB 路径时直接退出、不生成文件；`verify_package.py` 额外输出
+`privacy.entries` 与 `privacy.dll-codeview` 两条门禁（无 CodeView 时显示
+`no CodeView (RSDS/NB10) record`）。
+
+## 5. 隐私扫描
+
+```bash
+python tools/privacy_scan.py --zip "$SCRATCH/KillFeed-1.2.17.zip"
+python tools/privacy_scan.py --dir .
+python tools/privacy_scan.py --history .
+```
+
+预期均 `findings=0`、`SUMMARY: PASS`。负向对照：修复前的 1.2.17 候选 ZIP（DLL 内含 `RSDS`
+与构建机绝对路径）必须 `SUMMARY: FAIL`，并指出
+`BepInEx/plugins/GTFOKillFeed/GTFOKillFeed.dll` 的 `codeview-pdb-absolute`。
+扫描范围、检测项与唯一豁免（原 DLL 就带有的配置示例值）见 `docs/PRIVACY.md`。

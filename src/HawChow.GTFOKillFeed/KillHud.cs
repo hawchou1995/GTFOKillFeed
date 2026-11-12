@@ -96,9 +96,8 @@ public sealed class KillHud : MonoBehaviour
 			DamageNumbers.Draw();
 			EnemyBar.Draw();
 			TeammateMarks.Draw();
-			KillIconDisplay display = KillIconPolicy.ParseDisplay((Plugin.KillIconDisplay != null) ? Plugin.KillIconDisplay.Value : null);
 			KillIconHud.Draw();
-			DrawCards(display);
+			DrawCards();
 		}
 		catch (System.Exception ex)
 		{
@@ -208,14 +207,14 @@ public sealed class KillHud : MonoBehaviour
 		GUI.Label(position3, text2, _detailStyle);
 	}
 
-	private void DrawCards(KillIconDisplay display)
+	private void DrawCards()
 	{
 		VisibleKillCard[] array = KillTracker.Snapshot(Time.unscaledTime);
 		float unscaledTime = Time.unscaledTime;
 		int num = 0;
 		for (int i = 0; i < array.Length; i++)
 		{
-			if (PaintsCard(array[i].Card, display, unscaledTime))
+			if (PaintsCard(array[i].Card, Plugin.KillCardEnabled == null || Plugin.KillCardEnabled.Value))
 			{
 				array[num++] = array[i];
 			}
@@ -274,13 +273,9 @@ public sealed class KillHud : MonoBehaviour
 		}
 	}
 
-	internal static bool PaintsCard(KillCard card, KillIconDisplay display, float now)
+	internal static bool PaintsCard(KillCard card, bool cardEnabled)
 	{
-		if (card != null)
-		{
-			return KillIconPolicy.ShouldDrawCard(display, card.IconToken, card.IconExpiresAt, now, card.IconToken > 0 && KillIconHud.IsPresenting(card.IconToken) && KillIconHud.CanDrawNow(display));
-		}
-		return false;
+		return card != null && KillViewPolicy.CardVisible(cardEnabled, gameVisible: true);
 	}
 
 	private Texture2D TierIcon(KillTier tier)

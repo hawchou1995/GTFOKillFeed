@@ -117,37 +117,32 @@ internal static class HitSound
 
 	internal static void OnLocalHit(HitKind kind)
 	{
-		if (Enabled())
+		SoundSettings soundSettings = Current();
+		if (soundSettings.HitPlays)
 		{
-			PlayThrottled(kill: false, HitSoundPolicy.KindOf(kind, kill: false), KillTier.Minor, KillFlight.None);
+			PlayThrottled(kill: false, HitSoundPolicy.KindOf(kind, kill: false), KillTier.Minor, KillFlight.None, soundSettings.HitVolume);
 		}
 	}
 
 	internal static void OnLocalKill(KillTier tier, KillFlight flight)
 	{
-		if (Enabled())
+		SoundSettings soundSettings = Current();
+		if (soundSettings.KillPlays)
 		{
-			PlayThrottled(kill: true, HitCueKind.Kill, tier, flight);
+			PlayThrottled(kill: true, HitCueKind.Kill, tier, flight, soundSettings.KillVolume);
 		}
 	}
 
-	private static void PlayThrottled(bool kill, HitCueKind kind, KillTier tier, KillFlight flight)
+	private static void PlayThrottled(bool kill, HitCueKind kind, KillTier tier, KillFlight flight, float volume)
 	{
 		double now = Now();
 		double interval = HitSoundPolicy.MinInterval((Plugin.HitSoundMinIntervalSeconds != null) ? ((double)Plugin.HitSoundMinIntervalSeconds.Value) : 0.05);
-		State.TryPlay(kill, now, interval, () => PlayCue(kind, tier, flight));
+		State.TryPlay(kill, now, interval, () => PlayCue(kind, tier, flight, volume));
 	}
 
-	private static bool Enabled()
+	internal static SoundSettings Current()
 	{
-		bool enabled = Plugin.HitSoundEnabled == null || Plugin.HitSoundEnabled.Value;
-		float volume = HitSoundPolicy.Volume((Plugin.HitSoundVolume != null) ? Plugin.HitSoundVolume.Value : 0.8f);
-		return HitSoundPolicy.ShouldPlay(enabled, volume);
-	}
-
-	private static float Volume()
-	{
-		return HitSoundPolicy.Volume((Plugin.HitSoundVolume != null) ? Plugin.HitSoundVolume.Value : 0.8f);
+		return Plugin.SoundNow();
 	}
 
 	private static HitSoundStyle Style()
@@ -167,10 +162,9 @@ internal static class HitSound
 		}
 	}
 
-	private static bool PlayCue(HitCueKind kind, KillTier tier, KillFlight flight)
+	private static bool PlayCue(HitCueKind kind, KillTier tier, KillFlight flight, float volume)
 	{
 		string[] array = HitSoundPolicy.CueChain(Style(), kind, tier, flight);
-		float volume = Volume();
 		for (int i = 0; i < array.Length; i++)
 		{
 			short[] array2 = LoadCue(array[i]);

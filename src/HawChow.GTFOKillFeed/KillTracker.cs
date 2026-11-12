@@ -41,6 +41,7 @@ internal static class KillTracker
 		HitSound.Reset(reason);
 		HitMarkerHud.Reset(reason);
 		KillIconHud.Reset(reason);
+		KillIconOccluders.Reset();
 	}
 
 	internal static void Spawned(Dam_EnemyDamageBase enemy)
@@ -397,11 +398,14 @@ internal static class KillTracker
 	internal static void AddPreview(bool weakspot)
 	{
 		float unscaledTime = Time.unscaledTime;
-		if (KillIconPolicy.ShouldQueueCardPreviews(KillIconPolicy.ParseDisplay((Plugin.KillIconDisplay != null) ? Plugin.KillIconDisplay.Value : null)))
+		if (Plugin.KillCardEnabled == null || Plugin.KillCardEnabled.Value)
 		{
 			Cards.Enqueue(new KillCard(weakspot ? KillKind.Weakspot : KillKind.Normal, KillPresentationPolicy.PreviewTier(weakspot), weakspot ? "大壮" : "小白", weakspot ? 13f : 27f, weakspot ? 120f : 80f, unscaledTime, 999f, 0u, KillFlight.None, -1), unscaledTime, Plugin.CardLifetime.Value, Plugin.FadeSeconds.Value, ClampCards(Plugin.MaxCards.Value));
 		}
-		KillIconHud.AddPreview(unscaledTime);
+		if (Plugin.KillIconHeadEnabled != null && Plugin.KillIconHeadEnabled.Value)
+		{
+			KillIconHud.AddPreview(unscaledTime);
+		}
 	}
 
 	private static int SnapshotKillIcon(EnemyAgent agent, KillPresentation presentation, float now, Vector3 lethalPosition)
@@ -441,6 +445,7 @@ internal static class KillTracker
 		{
 			CorpseFeedback.EnterLevel();
 			TeammateMarks.EnterLevel();
+			KillIconOccluders.EnterLevel();
 		}
 		else
 		{

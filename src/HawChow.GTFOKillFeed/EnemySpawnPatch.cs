@@ -15,6 +15,7 @@ internal static class EnemySpawnPatch
 		KillTracker.GuardAction((Action)delegate
 		{
 			CorpseFeedback.Restore(__instance, "enemy-setup");
+			KillIconOccluders.Register(__instance);
 			KillTracker.Spawned(__instance.Damage);
 		});
 	}

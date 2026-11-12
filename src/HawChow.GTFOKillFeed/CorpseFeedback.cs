@@ -149,7 +149,7 @@ internal static class CorpseFeedback
 
 	private static void CloseLaunch(Corpse item, float age)
 	{
-		if (FeedbackPolicy.ShouldReportUnavailableLaunch(item.LaunchApplications, item.LaunchUnavailableLogged))
+		if (FeedbackPolicy.ShouldReportUnavailableLaunch(item.LaunchApplications, item.LaunchUnavailableLogged, Current().LaunchActive))
 		{
 			LogUnavailableLaunch(item, age);
 		}
@@ -160,6 +160,11 @@ internal static class CorpseFeedback
 		CloseLaunch(item, Mathf.Max(0f, now - item.At));
 		Log($"queue=removed;scheduleId={item.Sequence};source={item.Source};identity=0x{item.Identity.ToInt64():X};reason={reason};phase={(item.Exploded ? "post-burst" : "pre-burst")};age={Mathf.Max(0f, now - item.At):0.00}s;launch={LaunchState(item)}");
 		Release(item, removeHidden: true);
+	}
+
+	internal static CorpseSwitches Current()
+	{
+		return new CorpseSwitches(Plugin.CorpseEffects == null || Plugin.CorpseEffects.Value, Plugin.CorpseLaunch == null || Plugin.CorpseLaunch.Value, Plugin.CorpseDismember == null || Plugin.CorpseDismember.Value, Plugin.CorpseChunks == null || Plugin.CorpseChunks.Value, Plugin.CorpseExplosionFx == null || Plugin.CorpseExplosionFx.Value, Plugin.CorpseBurstVisual == null || Plugin.CorpseBurstVisual.Value, Plugin.CorpseBurstSound == null || Plugin.CorpseBurstSound.Value);
 	}
 
 	internal static void Schedule(EnemyAgent enemy, Vector3 direction, float strength, string source)
@@ -275,6 +280,7 @@ internal static class CorpseFeedback
 		//IL_01d4: Unknown result type (might be due to invalid IL or missing references)
 		//IL_0261: Unknown result type (might be due to invalid IL or missing references)
 		CorpseFade.Sweep();
+		CorpseSwitches switches = Current();
 		if (now >= _pruneAt)
 		{
 			_pruneAt = now + 2f;
@@ -396,19 +402,22 @@ internal static class CorpseFeedback
 						item.OffSceneCleanupApplied = true;
 						Log($"cleanup=offscene-recycled;scheduleId={item.Sequence};enemyId={item.EnemyDataId};releasedGibs={count};ragdollBodies={item.Ragdoll?.BodyCount ?? 0};age={num3:0.00}s");
 					}
-					if (!item.LaunchClosed && num3 >= 0.02f)
+					if (FeedbackPolicy.ShouldApplyLaunch(switches.LaunchActive, item.LaunchClosed, num3))
 					{
 						TryLaunchOrAbandon(item, num3);
 					}
-					if (!item.OffSceneCleanupApplied)
+					if (FeedbackPolicy.ShouldLimitRagdoll(switches.LaunchActive, item.OffSceneCleanupApplied))
 					{
 						item.Ragdoll?.Limit(FeedbackPolicy.AppliedTravel(item.Travel, item.BodySize), FeedbackPolicy.LaunchVelocityCap(item.Speed));
+					}
+					if (FeedbackPolicy.ShouldTrackChunks(switches.ChunksActive) && !item.OffSceneCleanupApplied)
+					{
 						LimitGibs(item);
 					}
-					if (!item.Broken && num3 >= 0.12f)
+					if (!item.Broken && num3 >= 0.12f && switches.DismemberActive)
 					{
 						item.Broken = true;
-						int num5 = ((item.Enemy != null && FeedbackPolicy.ShouldBreakCorpseLimbs(item.OffSceneCleanupApplied)) ? BreakLimbs(item) : 0);
+						int num5 = ((item.Enemy != null && FeedbackPolicy.ShouldBreakCorpseLimbs(item.OffSceneCleanupApplied, switches.DismemberActive)) ? BreakLimbs(item) : 0);
 						string text2 = (item.OffSceneCleanupApplied ? "enemy-offscene-cleanup" : ((item.Enemy == null) ? "enemy-null-fallback" : "attempted"));
 						if (item.GibDataCalls == 0 && item.Gibs.Count == 0)
 						{
@@ -434,7 +443,7 @@ internal static class CorpseFeedback
 						{
 							vector = item.BurstOrigin;
 						}
-						CorpseBurstPlan corpseBurstPlan = FeedbackPolicy.BurstPlan(Plugin.CorpseEffects.Value, Plugin.CorpseExplosionFx.Value, item.BodySize, item.Strength);
+						CorpseBurstPlan corpseBurstPlan = FeedbackPolicy.BurstPlan(switches, item.BodySize, item.Strength);
 						int bursts = corpseBurstPlan.Bursts;
 						int num6 = 0;
 						float num7 = FeedbackPolicy.BurstSpread(item.Strength, item.BodySize);
@@ -491,7 +500,7 @@ internal static class CorpseFeedback
 				Active.RemoveAt(num2);
 			}
 		}
-		if (!Plugin.Enabled.Value || !Plugin.CorpseEffects.Value || !Plugin.CorpseExplosionFx.Value)
+		if (!Plugin.Enabled.Value || !FeedbackPolicy.ShouldFlushCorpseSound(switches.BurstSoundActive))
 		{
 			ExplosionSound.Reset();
 			_pendingSoundPosition = Vector3.zero;
@@ -1341,7 +1350,7 @@ internal static class CorpseFeedback
 	{
 		//IL_002e: Unknown result type (might be due to invalid IL or missing references)
 		//IL_0033: Unknown result type (might be due to invalid IL or missing references)
-		if (_fragmentOwner == null || gib == null || _fragmentOwner.Gibs.Count >= 24)
+		if (!FeedbackPolicy.ShouldTrackChunks(Current().ChunksActive) || _fragmentOwner == null || gib == null || _fragmentOwner.Gibs.Count >= 24)
 		{
 			return;
 		}

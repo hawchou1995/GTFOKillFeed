@@ -136,6 +136,23 @@ internal static class HitMarkerPolicy
 		return false;
 	}
 
+	internal static bool ChannelEnabled(bool enabled, bool channel)
+	{
+		return enabled && channel;
+	}
+
+	internal static bool ChannelForKind(bool hitEnabled, bool killEnabled, HitMarkerKind kind)
+	{
+		return (kind == HitMarkerKind.Kill) ? killEnabled : hitEnabled;
+	}
+
+	// The single gate HitMarkerHud.Submit uses before projection or queue work: a
+	// disabled channel and the unresolved kind (None) are both rejected here.
+	internal static bool AcceptsSubmission(bool channelEnabled, HitMarkerKind kind)
+	{
+		return channelEnabled && kind != HitMarkerKind.None;
+	}
+
 	internal static HitMarkerKind KindFor(bool weakspot, bool armor, bool kill)
 	{
 		if (!kill)

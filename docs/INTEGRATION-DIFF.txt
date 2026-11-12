@@ -1,0 +1,202 @@
+# Integration method allowlist (baseline-1.2.16 tag DLL -> final 1.2.17 DLL).
+# Format: status<TAB>owner|signature<TAB>reason. status A=added, R=removed, C=IL changed.
+# C means the Mono.Cecil ildump text differs (not a raw IL byte comparison; metadata tokens/offsets are text).
+# Every diff must be listed; an unlisted diff or a stale entry fails tools/verify_integration.py.
+
+A	HawChow.GTFOKillFeed.CfgPresence|System.Boolean TryBool(System.Collections.Generic.IDictionary`2<System.String,System.String>,System.String,System.String,System.Boolean&)	legacy cfg presence parser for sound/marker migration
+A	HawChow.GTFOKillFeed.CfgPresence|System.Boolean TryFloat(System.Collections.Generic.IDictionary`2<System.String,System.String>,System.String,System.String,System.Single&)	legacy cfg presence parser for sound/marker migration
+A	HawChow.GTFOKillFeed.CfgPresence|System.Boolean TryRaw(System.Collections.Generic.IDictionary`2<System.String,System.String>,System.String,System.String,System.String&)	legacy cfg presence parser for sound/marker migration
+A	HawChow.GTFOKillFeed.CfgPresence|System.Collections.Generic.Dictionary`2<System.String,System.String> Parse(System.String)	legacy cfg presence parser for sound/marker migration
+A	HawChow.GTFOKillFeed.CfgPresence|System.String Key(System.String,System.String)	legacy cfg presence parser for sound/marker migration
+R	HawChow.GTFOKillFeed.CorpseFeedback/<>c__DisplayClass27_0|System.Boolean <Tick>b__1(System.Object)	compiler-generated tick lambda replaced after corpse switches
+R	HawChow.GTFOKillFeed.CorpseFeedback/<>c__DisplayClass27_0|System.Object <Tick>b__0()	compiler-generated tick lambda replaced after corpse switches
+R	HawChow.GTFOKillFeed.CorpseFeedback/<>c__DisplayClass27_0|System.Void .ctor()	compiler-generated tick lambda replaced after corpse switches
+A	HawChow.GTFOKillFeed.CorpseFeedback/<>c__DisplayClass28_0|System.Boolean <Tick>b__1(System.Object)	compiler-generated tick lambda replaced after corpse switches
+A	HawChow.GTFOKillFeed.CorpseFeedback/<>c__DisplayClass28_0|System.Object <Tick>b__0()	compiler-generated tick lambda replaced after corpse switches
+A	HawChow.GTFOKillFeed.CorpseFeedback/<>c__DisplayClass28_0|System.Void .ctor()	compiler-generated tick lambda replaced after corpse switches
+A	HawChow.GTFOKillFeed.CorpseFeedback|HawChow.GTFOKillFeed.CorpseSwitches Current()	corpse child switches gate capture/tick/launch without changing recycle paths
+C	HawChow.GTFOKillFeed.CorpseFeedback|System.Void CaptureGib(CharacterDestruction.CD_Gib)	corpse child switches gate capture/tick/launch without changing recycle paths
+C	HawChow.GTFOKillFeed.CorpseFeedback|System.Void CloseLaunch(HawChow.GTFOKillFeed.CorpseFeedback/Corpse,System.Single)	corpse child switches gate capture/tick/launch without changing recycle paths
+C	HawChow.GTFOKillFeed.CorpseFeedback|System.Void Tick(System.Single)	corpse child switches gate capture/tick/launch without changing recycle paths
+A	HawChow.GTFOKillFeed.CorpseSwitches|System.Boolean get_AnyBurstActive()	corpse child switch snapshot (launch/dismember/chunks/burst/fade)
+A	HawChow.GTFOKillFeed.CorpseSwitches|System.Boolean get_BurstSoundActive()	corpse child switch snapshot (launch/dismember/chunks/burst/fade)
+A	HawChow.GTFOKillFeed.CorpseSwitches|System.Boolean get_BurstVisualActive()	corpse child switch snapshot (launch/dismember/chunks/burst/fade)
+A	HawChow.GTFOKillFeed.CorpseSwitches|System.Boolean get_ChunksActive()	corpse child switch snapshot (launch/dismember/chunks/burst/fade)
+A	HawChow.GTFOKillFeed.CorpseSwitches|System.Boolean get_DismemberActive()	corpse child switch snapshot (launch/dismember/chunks/burst/fade)
+A	HawChow.GTFOKillFeed.CorpseSwitches|System.Boolean get_LaunchActive()	corpse child switch snapshot (launch/dismember/chunks/burst/fade)
+A	HawChow.GTFOKillFeed.CorpseSwitches|System.String Describe()	corpse child switch snapshot (launch/dismember/chunks/burst/fade)
+A	HawChow.GTFOKillFeed.CorpseSwitches|System.Void .ctor(System.Boolean,System.Boolean,System.Boolean,System.Boolean,System.Boolean,System.Boolean,System.Boolean)	corpse child switch snapshot (launch/dismember/chunks/burst/fade)
+C	HawChow.GTFOKillFeed.EnemyDespawnPatch/<>c__DisplayClass0_0|System.Void <Prefix>b__0()	hitbox registry unregister on despawn
+C	HawChow.GTFOKillFeed.EnemySpawnPatch/<>c__DisplayClass0_0|System.Void <Prefix>b__0()	hitbox registry register on setup
+A	HawChow.GTFOKillFeed.FeedbackPolicy|HawChow.GTFOKillFeed.CorpseBurstPlan BurstPlan(HawChow.GTFOKillFeed.CorpseSwitches,System.Single,System.Single)	corpse launch/burst/chunk policy gates
+R	HawChow.GTFOKillFeed.FeedbackPolicy|HawChow.GTFOKillFeed.CorpseBurstPlan BurstPlan(System.Boolean,System.Boolean,System.Single,System.Single)	corpse launch/burst/chunk policy gates
+A	HawChow.GTFOKillFeed.FeedbackPolicy|System.Boolean ShouldApplyLaunch(System.Boolean,System.Boolean,System.Single)	corpse launch/burst/chunk policy gates
+R	HawChow.GTFOKillFeed.FeedbackPolicy|System.Boolean ShouldBreakCorpseLimbs(System.Boolean)	corpse launch/burst/chunk policy gates
+A	HawChow.GTFOKillFeed.FeedbackPolicy|System.Boolean ShouldBreakCorpseLimbs(System.Boolean,System.Boolean)	corpse launch/burst/chunk policy gates
+A	HawChow.GTFOKillFeed.FeedbackPolicy|System.Boolean ShouldFlushCorpseSound(System.Boolean)	corpse launch/burst/chunk policy gates
+A	HawChow.GTFOKillFeed.FeedbackPolicy|System.Boolean ShouldLimitRagdoll(System.Boolean,System.Boolean)	corpse launch/burst/chunk policy gates
+A	HawChow.GTFOKillFeed.FeedbackPolicy|System.Boolean ShouldPlayCorpseBurstFx(HawChow.GTFOKillFeed.CorpseSwitches)	corpse launch/burst/chunk policy gates
+R	HawChow.GTFOKillFeed.FeedbackPolicy|System.Boolean ShouldPlayCorpseBurstFx(System.Boolean,System.Boolean)	corpse launch/burst/chunk policy gates
+R	HawChow.GTFOKillFeed.FeedbackPolicy|System.Boolean ShouldReportUnavailableLaunch(System.Int32,System.Boolean)	corpse launch/burst/chunk policy gates
+A	HawChow.GTFOKillFeed.FeedbackPolicy|System.Boolean ShouldReportUnavailableLaunch(System.Int32,System.Boolean,System.Boolean)	corpse launch/burst/chunk policy gates
+A	HawChow.GTFOKillFeed.FeedbackPolicy|System.Boolean ShouldTrackChunks(System.Boolean)	corpse launch/burst/chunk policy gates
+C	HawChow.GTFOKillFeed.HitMarkerHud|System.Boolean Submit(UnityEngine.Vector3,HawChow.GTFOKillFeed.HitMarkerKind,System.Int32)	hit/kill marker channel gate
+A	HawChow.GTFOKillFeed.HitMarkerPolicy|System.Boolean AcceptsSubmission(System.Boolean,HawChow.GTFOKillFeed.HitMarkerKind)	review fix: single submit gate (enabled channel and kind != None) consulted before projection/queue work
+A	HawChow.GTFOKillFeed.HitMarkerPolicy|System.Boolean ChannelEnabled(System.Boolean,System.Boolean)	hit/kill marker channel predicates
+A	HawChow.GTFOKillFeed.HitMarkerPolicy|System.Boolean ChannelForKind(System.Boolean,System.Boolean,HawChow.GTFOKillFeed.HitMarkerKind)	hit/kill marker channel predicates
+C	HawChow.GTFOKillFeed.HitSound/<>c__DisplayClass15_0|System.Boolean <PlayThrottled>b__0()	compiler-generated throttle lambda after cue volume signature change
+A	HawChow.GTFOKillFeed.HitSound|HawChow.GTFOKillFeed.SoundSettings Current()	independent hit/kill cue switches and effective volume path
+R	HawChow.GTFOKillFeed.HitSound|System.Boolean Enabled()	independent hit/kill cue switches and effective volume path
+R	HawChow.GTFOKillFeed.HitSound|System.Boolean PlayCue(HawChow.GTFOKillFeed.HitCueKind,HawChow.GTFOKillFeed.KillTier,HawChow.GTFOKillFeed.KillFlight)	independent hit/kill cue switches and effective volume path
+A	HawChow.GTFOKillFeed.HitSound|System.Boolean PlayCue(HawChow.GTFOKillFeed.HitCueKind,HawChow.GTFOKillFeed.KillTier,HawChow.GTFOKillFeed.KillFlight,System.Single)	independent hit/kill cue switches and effective volume path
+R	HawChow.GTFOKillFeed.HitSound|System.Single Volume()	independent hit/kill cue switches and effective volume path
+C	HawChow.GTFOKillFeed.HitSound|System.Void OnLocalHit(HawChow.GTFOKillFeed.HitKind)	independent hit/kill cue switches and effective volume path
+C	HawChow.GTFOKillFeed.HitSound|System.Void OnLocalKill(HawChow.GTFOKillFeed.KillTier,HawChow.GTFOKillFeed.KillFlight)	independent hit/kill cue switches and effective volume path
+R	HawChow.GTFOKillFeed.HitSound|System.Void PlayThrottled(System.Boolean,HawChow.GTFOKillFeed.HitCueKind,HawChow.GTFOKillFeed.KillTier,HawChow.GTFOKillFeed.KillFlight)	independent hit/kill cue switches and effective volume path
+A	HawChow.GTFOKillFeed.HitSound|System.Void PlayThrottled(System.Boolean,HawChow.GTFOKillFeed.HitCueKind,HawChow.GTFOKillFeed.KillTier,HawChow.GTFOKillFeed.KillFlight,System.Single)	independent hit/kill cue switches and effective volume path
+A	HawChow.GTFOKillFeed.IconPlacement|System.Void .ctor(System.Single,System.Boolean,System.Single,System.Int32,HawChow.GTFOKillFeed.PlacementReason)	visual placement result type for hitbox avoidance
+R	HawChow.GTFOKillFeed.KillHud|System.Boolean PaintsCard(HawChow.GTFOKillFeed.KillCard,HawChow.GTFOKillFeed.KillIconDisplay,System.Single)	card switch and independent card drawing; no icon presence coupling
+A	HawChow.GTFOKillFeed.KillHud|System.Boolean PaintsCard(HawChow.GTFOKillFeed.KillCard,System.Boolean)	card switch and independent card drawing; no icon presence coupling
+A	HawChow.GTFOKillFeed.KillHud|System.Void DrawCards()	card switch and independent card drawing; no icon presence coupling
+R	HawChow.GTFOKillFeed.KillHud|System.Void DrawCards(HawChow.GTFOKillFeed.KillIconDisplay)	card switch and independent card drawing; no icon presence coupling
+C	HawChow.GTFOKillFeed.KillHud|System.Void OnGUI()	card switch and independent card drawing; no icon presence coupling
+R	HawChow.GTFOKillFeed.KillIconHud|HawChow.GTFOKillFeed.KillIconDisplay Display()	head switch, opacity composition, full badge avoidance and safe hide
+R	HawChow.GTFOKillFeed.KillIconHud|System.Boolean CanDrawNow(HawChow.GTFOKillFeed.KillIconDisplay)	head switch, opacity composition, full badge avoidance and safe hide
+A	HawChow.GTFOKillFeed.KillIconHud|System.Boolean IsHidden(System.Int32)	head switch, opacity composition, full badge avoidance and safe hide
+C	HawChow.GTFOKillFeed.KillIconHud|System.Boolean IsPresenting(System.Int32)	head switch, opacity composition, full badge avoidance and safe hide
+C	HawChow.GTFOKillFeed.KillIconHud|System.Void .cctor()	head switch, opacity composition, full badge avoidance and safe hide
+C	HawChow.GTFOKillFeed.KillIconHud|System.Void Draw()	head switch, opacity composition, full badge avoidance and safe hide
+C	HawChow.GTFOKillFeed.KillIconHud|System.Void DrawSlot(HawChow.GTFOKillFeed.KillIconSlot&,UnityEngine.Camera,System.Single,System.Single,System.Single,System.Single,System.Single)	head switch, opacity composition, full badge avoidance and safe hide
+A	HawChow.GTFOKillFeed.KillIconHud|System.Void Hide(System.Int32)	head switch, opacity composition, full badge avoidance and safe hide
+A	HawChow.GTFOKillFeed.KillIconHud|System.Void ResetHidden()	head switch, opacity composition, full badge avoidance and safe hide
+A	HawChow.GTFOKillFeed.KillIconOccluders/EnemySlot|System.Void .ctor()	review fix: per-enemy occluder slot (agent + collider snapshot) held by the bounded registry
+A	HawChow.GTFOKillFeed.KillIconOccluders|HawChow.GTFOKillFeed.OccluderRegisterResult RegisterInternal(Enemies.EnemyAgent,System.Single)	review fix: registers one enemy slot through the bounded registry and reports added/duplicate/rejected
+A	HawChow.GTFOKillFeed.KillIconOccluders|System.Boolean Capture(HawChow.GTFOKillFeed.KillIconOccluders/EnemySlot,HawChow.GTFOKillFeed.OccluderRetry&,System.Single)	review fix: collider snapshot with retry bookkeeping; false means the candidate set is untrusted this frame
+A	HawChow.GTFOKillFeed.KillIconOccluders|System.Boolean IsAlive(Enemies.EnemyAgent)	bounded live-enemy hitbox registry and projection
+A	HawChow.GTFOKillFeed.KillIconOccluders|System.Boolean IsSlotAlive(HawChow.GTFOKillFeed.KillIconOccluders/EnemySlot)	review fix: alive predicate that prunes the bounded registry
+A	HawChow.GTFOKillFeed.KillIconOccluders|System.Boolean Project(UnityEngine.Camera,UnityEngine.Bounds,System.Single,System.Int32,System.Int32,HawChow.GTFOKillFeed.ScreenBox&)	bounded live-enemy hitbox registry and projection
+A	HawChow.GTFOKillFeed.KillIconOccluders|System.Boolean TryUnionBounds(HawChow.GTFOKillFeed.KillIconOccluders/EnemySlot,UnityEngine.Bounds&)	review fix: finite collider-union bounds for projection; false skips that enemy
+A	HawChow.GTFOKillFeed.KillIconOccluders|System.Boolean get_Complete()	bounded live-enemy hitbox registry and projection
+A	HawChow.GTFOKillFeed.KillIconOccluders|System.Int32 Collect(UnityEngine.Camera,HawChow.GTFOKillFeed.ScreenBox[],System.Boolean&)	bounded live-enemy hitbox registry and projection
+A	HawChow.GTFOKillFeed.KillIconOccluders|System.Int32 get_Count()	bounded live-enemy hitbox registry and projection
+A	HawChow.GTFOKillFeed.KillIconOccluders|System.Int32 get_RescanAttempts()	review fix: bounded rebuild attempts surfaced for the recovery receipt
+A	HawChow.GTFOKillFeed.KillIconOccluders|System.IntPtr SafeKey(Enemies.EnemyAgent)	bounded live-enemy hitbox registry and projection
+A	HawChow.GTFOKillFeed.KillIconOccluders|System.Single SafeNearClip(UnityEngine.Camera)	bounded live-enemy hitbox registry and projection
+A	HawChow.GTFOKillFeed.KillIconOccluders|System.Single SafeNow()	review fix: unscaled time with exception fallback for recovery timing
+A	HawChow.GTFOKillFeed.KillIconOccluders|System.Void .cctor()	bounded live-enemy hitbox registry and projection
+A	HawChow.GTFOKillFeed.KillIconOccluders|System.Void EnterLevel()	bounded live-enemy hitbox registry and projection
+A	HawChow.GTFOKillFeed.KillIconOccluders|System.Void FillCorners(UnityEngine.Vector3,UnityEngine.Vector3)	bounded live-enemy hitbox registry and projection
+A	HawChow.GTFOKillFeed.KillIconOccluders|System.Void Rebuild(System.Single)	review fix: one rate-limited rebuild; clears incompleteness only when every live enemy fits
+A	HawChow.GTFOKillFeed.KillIconOccluders|System.Void Register(Enemies.EnemyAgent)	bounded live-enemy hitbox registry and projection
+A	HawChow.GTFOKillFeed.KillIconOccluders|System.Void Reset()	bounded live-enemy hitbox registry and projection
+A	HawChow.GTFOKillFeed.KillIconOccluders|System.Void Seed(System.Single)	review fix: one-time seed scan; overflow or exception marks the registry incomplete
+A	HawChow.GTFOKillFeed.KillIconOccluders|System.Void Unregister(Enemies.EnemyAgent)	bounded live-enemy hitbox registry and projection
+R	HawChow.GTFOKillFeed.KillIconPolicy|HawChow.GTFOKillFeed.KillIconDisplay ParseDisplay(System.String)	removed old single Display selector helpers
+R	HawChow.GTFOKillFeed.KillIconPolicy|System.Boolean ShouldDrawCard(HawChow.GTFOKillFeed.KillIconDisplay,System.Int32,System.Single,System.Single,System.Boolean)	removed old single Display selector helpers
+R	HawChow.GTFOKillFeed.KillIconPolicy|System.Boolean ShouldDrawIcons(System.Boolean,HawChow.GTFOKillFeed.KillIconDisplay)	removed old single Display selector helpers
+R	HawChow.GTFOKillFeed.KillIconPolicy|System.Boolean ShouldQueueCardPreviews(HawChow.GTFOKillFeed.KillIconDisplay)	removed old single Display selector helpers
+R	HawChow.GTFOKillFeed.KillIconPolicy|System.Boolean UsesHeadIcons(HawChow.GTFOKillFeed.KillIconDisplay)	removed old single Display selector helpers
+R	HawChow.GTFOKillFeed.KillIconPolicy|System.String DisplayToken(HawChow.GTFOKillFeed.KillIconDisplay)	removed old single Display selector helpers
+A	HawChow.GTFOKillFeed.KillOccluderRecovery|System.Boolean MayRetry(HawChow.GTFOKillFeed.OccluderRetry&,System.Single)	review fix: two free capture retries, then the exponential throttle applies
+A	HawChow.GTFOKillFeed.KillOccluderRecovery|System.Boolean RescanDue(System.Single)	review fix: rate-limit gate so a bounded rebuild can never run per frame
+A	HawChow.GTFOKillFeed.KillOccluderRecovery|System.Boolean get_Complete()	review fix: registry and frame completeness conjunction that decides icon visibility
+A	HawChow.GTFOKillFeed.KillOccluderRecovery|System.Boolean get_FrameComplete()	review fix: recovery state - this frame's candidate set is trustworthy
+A	HawChow.GTFOKillFeed.KillOccluderRecovery|System.Boolean get_RegistryComplete()	review fix: recovery state - the registry is provably complete
+A	HawChow.GTFOKillFeed.KillOccluderRecovery|System.Boolean get_RescanPending()	review fix: recovery state - a bounded rebuild is owed
+A	HawChow.GTFOKillFeed.KillOccluderRecovery|System.Boolean get_Seeded()	review fix: recovery state - the one-time seed scan has run
+A	HawChow.GTFOKillFeed.KillOccluderRecovery|System.Int32 get_FailedRescans()	review fix: recovery state - failed rebuild count feeds the backoff
+A	HawChow.GTFOKillFeed.KillOccluderRecovery|System.Int32 get_RescanAttempts()	review fix: recovery state - rebuild attempts surfaced for logging and tests
+A	HawChow.GTFOKillFeed.KillOccluderRecovery|System.Single CaptureRetryDelay(System.Int32)	review fix: exponential capture retry delay capped at two seconds
+A	HawChow.GTFOKillFeed.KillOccluderRecovery|System.Single RescanDelay(System.Int32)	review fix: exponential rebuild backoff capped at two seconds
+A	HawChow.GTFOKillFeed.KillOccluderRecovery|System.Single Sanitize(System.Single)	review fix: non-finite time falls back to zero
+A	HawChow.GTFOKillFeed.KillOccluderRecovery|System.Single get_NextRescanAt()	review fix: recovery state - next allowed rebuild time
+A	HawChow.GTFOKillFeed.KillOccluderRecovery|System.Void .ctor()	review fix: default recovery state (unseeded but complete)
+A	HawChow.GTFOKillFeed.KillOccluderRecovery|System.Void BeginFrame()	review fix: starts a frame with a trusted candidate set
+A	HawChow.GTFOKillFeed.KillOccluderRecovery|System.Void Clear()	review fix: level reset clears every recovery flag and timer
+A	HawChow.GTFOKillFeed.KillOccluderRecovery|System.Void MarkSeeded()	review fix: records that the one-time seed scan ran
+A	HawChow.GTFOKillFeed.KillOccluderRecovery|System.Void NoteCaptureFailure(HawChow.GTFOKillFeed.OccluderRetry&,System.Single)	review fix: counts a capture failure and schedules its throttle
+A	HawChow.GTFOKillFeed.KillOccluderRecovery|System.Void NoteCaptureSuccess(HawChow.GTFOKillFeed.OccluderRetry&)	review fix: clears capture retry state after a good snapshot
+A	HawChow.GTFOKillFeed.KillOccluderRecovery|System.Void NoteFrameIncomplete()	review fix: a transient fault hides icons for this frame only
+A	HawChow.GTFOKillFeed.KillOccluderRecovery|System.Void NoteRegistryIncomplete(System.Single)	review fix: registry overflow schedules a bounded rebuild and keeps icons hidden
+A	HawChow.GTFOKillFeed.KillOccluderRecovery|System.Void NoteRegistryRebuilt()	review fix: proven completeness clears the pending rebuild
+A	HawChow.GTFOKillFeed.KillOccluderRecovery|System.Void NoteRescanAttempt()	review fix: counts a bounded rebuild attempt
+A	HawChow.GTFOKillFeed.KillOccluderRecovery|System.Void NoteRescanFailed(System.Single)	review fix: failed rebuild backs off and stays fail-closed
+A	HawChow.GTFOKillFeed.KillOccluderRegistry`1/Entry|System.Void .ctor(T,System.Object,System.IntPtr)	review fix: registry entry (value, identity, pointer key, capture stamp, retry state)
+A	HawChow.GTFOKillFeed.KillOccluderRegistry`1|HawChow.GTFOKillFeed.KillOccluderRecovery get_Recovery()	review fix: recovery state shared with the game collector
+A	HawChow.GTFOKillFeed.KillOccluderRegistry`1|HawChow.GTFOKillFeed.KillOccluderRegistry`1/Entry<T> At(System.Int32)	review fix: indexed entry access for the collector loop
+A	HawChow.GTFOKillFeed.KillOccluderRegistry`1|HawChow.GTFOKillFeed.OccluderRegisterResult Register(T,System.Object,System.IntPtr,System.Single)	review fix: de-duplicates by pointer/identity and reports capacity overflow as rejected
+A	HawChow.GTFOKillFeed.KillOccluderRegistry`1|System.Boolean Same(HawChow.GTFOKillFeed.KillOccluderRegistry`1/Entry<T>,System.Object,System.IntPtr)	review fix: pointer-first identity comparison with identity fallback when the key is zero
+A	HawChow.GTFOKillFeed.KillOccluderRegistry`1|System.Boolean Unregister(System.Object,System.IntPtr)	review fix: removes an entry by pointer/identity on despawn
+A	HawChow.GTFOKillFeed.KillOccluderRegistry`1|System.Int32 PruneDead(System.Func`2<T,System.Boolean>)	review fix: drops entries whose enemy is gone
+A	HawChow.GTFOKillFeed.KillOccluderRegistry`1|System.Int32 get_Capacity()	review fix: bounded registry capacity
+A	HawChow.GTFOKillFeed.KillOccluderRegistry`1|System.Int32 get_Count()	review fix: current registry entry count
+A	HawChow.GTFOKillFeed.KillOccluderRegistry`1|System.Void .ctor(HawChow.GTFOKillFeed.KillOccluderRecovery,System.Int32)	review fix: bounded registry over the shared recovery state
+A	HawChow.GTFOKillFeed.KillOccluderRegistry`1|System.Void Clear()	review fix: level reset clears the registry
+A	HawChow.GTFOKillFeed.KillOccluderRegistry`1|System.Void RemoveAt(System.Int32)	review fix: removes a dead entry during collection
+C	HawChow.GTFOKillFeed.KillTracker|System.Void AddPreview(System.Boolean)	preview/registry lifecycle for independent visual switches
+C	HawChow.GTFOKillFeed.KillTracker|System.Void ObserveState(eGameStateName)	preview/registry lifecycle for independent visual switches
+C	HawChow.GTFOKillFeed.KillTracker|System.Void Reset(System.String)	preview/registry lifecycle for independent visual switches
+A	HawChow.GTFOKillFeed.KillViewConfigApply|System.Boolean Apply(HawChow.GTFOKillFeed.KillViewSwitches,System.Action`1<System.Boolean>,System.Action`1<System.Boolean>,System.Action`1<System.String>)	shared visual migration apply helper
+A	HawChow.GTFOKillFeed.KillViewConfigFile|HawChow.GTFOKillFeed.KillViewConfigFile Parse(System.String)	raw cfg snapshot parser before Bind
+A	HawChow.GTFOKillFeed.KillViewConfigFile|HawChow.GTFOKillFeed.KillViewConfigFile Read(System.String)	raw cfg snapshot parser before Bind
+A	HawChow.GTFOKillFeed.KillViewConfigFile|System.Boolean Has(System.String,System.String)	raw cfg snapshot parser before Bind
+A	HawChow.GTFOKillFeed.KillViewConfigFile|System.Int32 get_Count()	raw cfg snapshot parser before Bind
+A	HawChow.GTFOKillFeed.KillViewConfigFile|System.String Compose(System.String,System.String)	raw cfg snapshot parser before Bind
+A	HawChow.GTFOKillFeed.KillViewConfigFile|System.String Raw(System.String,System.String)	raw cfg snapshot parser before Bind
+A	HawChow.GTFOKillFeed.KillViewConfigFile|System.Void .ctor()	raw cfg snapshot parser before Bind
+A	HawChow.GTFOKillFeed.KillViewPolicy|HawChow.GTFOKillFeed.IconPlacement ResolvePlacement(HawChow.GTFOKillFeed.ScreenBox,HawChow.GTFOKillFeed.ScreenBox[],System.Int32,System.Single,System.Single)	visual switch precedence, opacity and iterative avoidance
+A	HawChow.GTFOKillFeed.KillViewPolicy|HawChow.GTFOKillFeed.KillDisplayLegacy ParseLegacyDisplay(System.String)	visual switch precedence, opacity and iterative avoidance
+A	HawChow.GTFOKillFeed.KillViewPolicy|HawChow.GTFOKillFeed.KillViewSwitches ExplicitResult(System.Boolean,System.Boolean,System.Boolean,System.Boolean,System.Boolean,System.Boolean,System.Boolean,HawChow.GTFOKillFeed.KillDisplayLegacy,HawChow.GTFOKillFeed.KillDisplayLegacy,System.Boolean,System.String)	visual switch precedence, opacity and iterative avoidance
+A	HawChow.GTFOKillFeed.KillViewPolicy|HawChow.GTFOKillFeed.KillViewSwitches LegacyResult(HawChow.GTFOKillFeed.KillDisplayLegacy,System.Boolean,System.Boolean,System.Boolean,System.Boolean,System.Boolean,System.Boolean,System.Boolean,System.String)	visual switch precedence, opacity and iterative avoidance
+A	HawChow.GTFOKillFeed.KillViewPolicy|HawChow.GTFOKillFeed.KillViewSwitches ResolveSwitches(HawChow.GTFOKillFeed.KillViewConfigFile)	visual switch precedence, opacity and iterative avoidance
+A	HawChow.GTFOKillFeed.KillViewPolicy|HawChow.GTFOKillFeed.ViewMode ParseMode(System.String,HawChow.GTFOKillFeed.KillDisplayLegacy&)	visual switch precedence, opacity and iterative avoidance
+A	HawChow.GTFOKillFeed.KillViewPolicy|System.Boolean CardVisible(System.Boolean,System.Boolean)	visual switch precedence, opacity and iterative avoidance
+A	HawChow.GTFOKillFeed.KillViewPolicy|System.Boolean HeadVisible(System.Boolean,System.Boolean,System.Boolean)	visual switch precedence, opacity and iterative avoidance
+A	HawChow.GTFOKillFeed.KillViewPolicy|System.Boolean IsFinite(System.Single)	visual switch precedence, opacity and iterative avoidance
+A	HawChow.GTFOKillFeed.KillViewPolicy|System.Boolean Overlaps(HawChow.GTFOKillFeed.ScreenBox,HawChow.GTFOKillFeed.ScreenBox)	visual switch precedence, opacity and iterative avoidance
+A	HawChow.GTFOKillFeed.KillViewPolicy|System.Boolean ProjectBox(System.Single[],System.Single[],System.Single[],System.Int32,System.Single,System.Single,System.Single,HawChow.GTFOKillFeed.ScreenBox&)	visual switch precedence, opacity and iterative avoidance
+A	HawChow.GTFOKillFeed.KillViewPolicy|System.Boolean ShouldConsiderCandidate(System.Boolean,System.Boolean)	visual switch precedence, opacity and iterative avoidance
+A	HawChow.GTFOKillFeed.KillViewPolicy|System.Boolean TryAppendCandidate(HawChow.GTFOKillFeed.ScreenBox[],System.Int32&,System.Boolean,HawChow.GTFOKillFeed.ScreenBox)	visual switch precedence, opacity and iterative avoidance
+A	HawChow.GTFOKillFeed.KillViewPolicy|System.Boolean TryHighestOverlap(HawChow.GTFOKillFeed.ScreenBox,HawChow.GTFOKillFeed.ScreenBox[],System.Int32,System.Single&,System.Int32&)	visual switch precedence, opacity and iterative avoidance
+A	HawChow.GTFOKillFeed.KillViewPolicy|System.Boolean TryParseBool(System.String,System.Boolean&)	visual switch precedence, opacity and iterative avoidance
+A	HawChow.GTFOKillFeed.KillViewPolicy|System.Single CompositeAlpha(System.Single,System.Single)	visual switch precedence, opacity and iterative avoidance
+A	HawChow.GTFOKillFeed.KillViewPolicy|System.Single Opacity(System.Single)	visual switch precedence, opacity and iterative avoidance
+A	HawChow.GTFOKillFeed.KillViewPolicy|System.String LegacyToken(HawChow.GTFOKillFeed.KillDisplayLegacy)	visual switch precedence, opacity and iterative avoidance
+A	HawChow.GTFOKillFeed.KillViewSwitches|System.Void .ctor(System.Boolean,System.Boolean,HawChow.GTFOKillFeed.SwitchOrigin,HawChow.GTFOKillFeed.SwitchOrigin,System.Boolean,System.Boolean,System.Boolean,HawChow.GTFOKillFeed.ViewMode,HawChow.GTFOKillFeed.KillDisplayLegacy,System.String,System.Boolean,System.Boolean,System.Boolean)	visual switch resolution result including migration marker
+A	HawChow.GTFOKillFeed.Plugin/<>c|System.Void .cctor()	compiler-generated visual migration apply delegates
+A	HawChow.GTFOKillFeed.Plugin/<>c|System.Void .ctor()	compiler-generated visual migration apply delegates
+A	HawChow.GTFOKillFeed.Plugin/<>c|System.Void <ApplyKillViewSwitches>b__121_0(System.Boolean)	compiler-generated visual migration apply delegates
+A	HawChow.GTFOKillFeed.Plugin/<>c|System.Void <ApplyKillViewSwitches>b__121_1(System.Boolean)	compiler-generated visual migration apply delegates
+A	HawChow.GTFOKillFeed.Plugin/<>c|System.Void <ApplyKillViewSwitches>b__121_2(System.String)	compiler-generated visual migration apply delegates
+A	HawChow.GTFOKillFeed.Plugin|HawChow.GTFOKillFeed.SoundConfigPlan ScanSoundConfig()	joint pre-Bind scans, separate migrations, version 1.2.17 logging
+A	HawChow.GTFOKillFeed.Plugin|HawChow.GTFOKillFeed.SoundSettings SoundNow()	joint pre-Bind scans, separate migrations, version 1.2.17 logging
+A	HawChow.GTFOKillFeed.Plugin|System.Boolean MarkerChannel(HawChow.GTFOKillFeed.HitMarkerKind)	joint pre-Bind scans, separate migrations, version 1.2.17 logging
+A	HawChow.GTFOKillFeed.Plugin|System.Void ApplyKillViewSwitches(HawChow.GTFOKillFeed.KillViewConfigFile)	joint pre-Bind scans, separate migrations, version 1.2.17 logging
+C	HawChow.GTFOKillFeed.Plugin|System.Void Load()	joint pre-Bind scans, separate migrations, version 1.2.17 logging
+A	HawChow.GTFOKillFeed.Plugin|System.Void LogSwitchReceipts()	joint pre-Bind scans, separate migrations, version 1.2.17 logging
+C	HawChow.GTFOKillFeed.Plugin|System.Void PollConfigHotReload(System.Single)	joint pre-Bind scans, separate migrations, version 1.2.17 logging
+A	HawChow.GTFOKillFeed.ScreenBox|System.Boolean get_IsUsable()	screen-space rectangle for visual avoidance
+A	HawChow.GTFOKillFeed.ScreenBox|System.Single get_CentreX()	screen-space rectangle for visual avoidance
+A	HawChow.GTFOKillFeed.ScreenBox|System.Single get_Height()	screen-space rectangle for visual avoidance
+A	HawChow.GTFOKillFeed.ScreenBox|System.Single get_Width()	screen-space rectangle for visual avoidance
+A	HawChow.GTFOKillFeed.ScreenBox|System.Void .ctor(System.Single,System.Single,System.Single,System.Single)	screen-space rectangle for visual avoidance
+A	HawChow.GTFOKillFeed.SoundConfigBinding|HawChow.GTFOKillFeed.SoundConfigBinding Bind(BepInEx.Configuration.ConfigFile,HawChow.GTFOKillFeed.SoundConfigPlan)	sound migration binding and live master/channel volume
+A	HawChow.GTFOKillFeed.SoundConfigBinding|HawChow.GTFOKillFeed.SoundSettings Current()	sound migration binding and live master/channel volume
+A	HawChow.GTFOKillFeed.SoundConfigBinding|System.Void .ctor()	sound migration binding and live master/channel volume
+A	HawChow.GTFOKillFeed.SoundConfigPlan|HawChow.GTFOKillFeed.SoundConfigPlan FromText(System.String,System.Boolean)	sound legacy/new key precedence
+A	HawChow.GTFOKillFeed.SoundConfigPlan|HawChow.GTFOKillFeed.SoundConfigPlan FromUnreadableFile()	sound legacy/new key precedence
+A	HawChow.GTFOKillFeed.SoundConfigPlan|HawChow.GTFOKillFeed.SoundSettings Defaults()	sound legacy/new key precedence
+A	HawChow.GTFOKillFeed.SoundConfigPlan|System.String Describe()	sound legacy/new key precedence
+A	HawChow.GTFOKillFeed.SoundConfigPlan|System.Void .cctor()	sound legacy/new key precedence
+A	HawChow.GTFOKillFeed.SoundConfigPlan|System.Void .ctor()	sound legacy/new key precedence
+A	HawChow.GTFOKillFeed.SoundSettings|HawChow.GTFOKillFeed.SoundSettings Resolve(System.Boolean,System.Boolean,System.Boolean,System.Single,System.Single,System.Single,System.Single)	effective channel volume and play predicates
+A	HawChow.GTFOKillFeed.SoundSettings|System.Boolean ChannelEnabled(System.Boolean,System.Boolean)	effective channel volume and play predicates
+A	HawChow.GTFOKillFeed.SoundSettings|System.Boolean get_AnyPlays()	effective channel volume and play predicates
+A	HawChow.GTFOKillFeed.SoundSettings|System.Boolean get_HitPlays()	effective channel volume and play predicates
+A	HawChow.GTFOKillFeed.SoundSettings|System.Boolean get_KillPlays()	effective channel volume and play predicates
+A	HawChow.GTFOKillFeed.SoundSettings|System.Single Clamp01(System.Single)	effective channel volume and play predicates
+A	HawChow.GTFOKillFeed.SoundSettings|System.Single Effective(System.Single,System.Single,System.Single)	effective channel volume and play predicates
+A	HawChow.GTFOKillFeed.SoundSettings|System.Single Gain(System.Single)	effective channel volume and play predicates
+A	HawChow.GTFOKillFeed.SoundSettings|System.Single Volume(System.Single,System.Single)	effective channel volume and play predicates
+A	HawChow.GTFOKillFeed.SoundSettings|System.String Describe()	effective channel volume and play predicates
+A	HawChow.GTFOKillFeed.SoundSettings|System.Void .ctor(System.Boolean,System.Single,System.Boolean,System.Boolean,System.Single,System.Single)	effective channel volume and play predicates

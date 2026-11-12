@@ -11,6 +11,14 @@ internal static class HitSoundPolicy
 
 	internal const float DefaultVolume = 0.8f;
 
+	internal const bool DefaultHitEnabled = false;
+
+	internal const bool DefaultKillEnabled = false;
+
+	internal const float DefaultHitVolume = 0.4f;
+
+	internal const float DefaultKillVolume = 0.4f;
+
 	internal const bool DefaultMuteVanillaIndicator = false;
 
 	internal const double DefaultMinIntervalSeconds = 0.05;

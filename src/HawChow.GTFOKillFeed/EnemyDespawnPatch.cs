@@ -14,6 +14,7 @@ internal static class EnemyDespawnPatch
 		//IL_001c: Expected O, but got Unknown
 		KillTracker.GuardAction((Action)delegate
 		{
+			KillIconOccluders.Unregister(__instance);
 			CorpseFeedback.Restore(__instance, "enemy-despawn");
 		});
 	}

@@ -153,7 +153,7 @@ public sealed class HitMarkerHud : MonoBehaviour
 
 	private bool Submit(Vector3 world, HitMarkerKind kind, int identity)
 	{
-		if (!Enabled() || kind == HitMarkerKind.None)
+		if (!HitMarkerPolicy.AcceptsSubmission(Plugin.MarkerChannel(kind), kind))
 		{
 			return false;
 		}

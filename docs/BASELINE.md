@@ -124,7 +124,7 @@ python tools/negative_controls.py        # 门禁自检（负向对照）
 ## 8. 未恢复 / 不可恢复
 
 1. 原始工程文件划分、命名空间组织、注释、提交历史（无 PDB/路径串）。当前结构是 ILSpy 的"每类型一文件"。
-2. 原工程编译设置（`LangVersion`/优化开关/`DebugType`）无直接证据；现取 `net6.0`+C#10+Release（依据：`System.Runtime 6.0.0.0` 引用 + REPRO debug entry）。
+2. 原工程编译设置（`LangVersion`/优化开关/`DebugType`）无直接证据；现取 `net6.0`+C#10+Release（依据：`System.Runtime 6.0.0.0` 引用 + REPRO debug entry）。重建 csproj 在 Release 下显式 `DebugType=none`/`DebugSymbols=false`，与原包「只有 REPRO entry、无 CodeView/PDB」一致，且不改变 IL/资源（见 `docs/PRIVACY.md`）。
 3. 符号与行号：重建 PDB 与原包无关；编译器生成的 lambda/闭包编号与原 DLL 不完全一致（已知 1 处）。
 4. 原工程 "IL 门禁"（CHANGELOG 提到）源码不在包内，未恢复；当前门禁是本次自建。
 5. 游戏本体不在本机，**运行期/实机行为未验证**；编译期引用只用 `$GTFO_DIR` 快照（只读）。

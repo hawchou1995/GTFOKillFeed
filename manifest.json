@@ -1,0 +1,10 @@
+{
+  "name": "KillFeed",
+  "version_number": "1.2.17",
+  "website_url": "https://qingju.me",
+  "description": "为 GTFO 提供纯本地的击杀卡片、头顶击杀图标、伤害数字、尸体反馈与可独立开关的音效/标记；联机敌人血条依赖前置 DamageSync。1.2.17：独立卡片/头顶图标开关与透明度，头顶图标按可见 hitbox 避让；命中/击杀音效、尸体反馈拆分为独立开关，旧 Display/Volume/Enabled 配置热重载兼容。",
+  "dependencies": [
+    "BepInEx-BepInExPack_GTFO-3.2.3",
+    "randomuserhi-DamageSync-0.0.7"
+  ]
+}

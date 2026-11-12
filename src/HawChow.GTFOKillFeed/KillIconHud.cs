@@ -10,6 +10,16 @@ internal static class KillIconHud
 {
 	private static readonly KillIconQueue Queue = new KillIconQueue(12);
 
+	private static readonly ScreenBox[] Occluders = new ScreenBox[KillIconOccluders.MaxCandidates];
+
+	private static bool _occludersComplete;
+
+	private static int _occluderCount;
+
+	private static readonly int[] HiddenTokens = new int[32];
+
+	private static int _hiddenCount;
+
 	private static readonly IconTextureCache Icons = new IconTextureCache();
 
 	private static readonly HexColorCache WingColor = new HexColorCache();
@@ -47,11 +57,6 @@ internal static class KillIconHud
 	internal static int RealCount => Queue.RealCount;
 
 	internal static int PreviewCount => Queue.PreviewCount;
-
-	private static KillIconDisplay Display()
-	{
-		return KillIconPolicy.ParseDisplay((Plugin.KillIconDisplay != null) ? Plugin.KillIconDisplay.Value : null);
-	}
 
 	internal static void Reset(string reason)
 	{
@@ -169,6 +174,10 @@ internal static class KillIconHud
 
 	internal static bool IsPresenting(int token)
 	{
+		if (IsHidden(token))
+		{
+			return false;
+		}
 		if (!Queue.TryFind(token, out var index, out var preview))
 		{
 			return false;
@@ -180,22 +189,6 @@ internal static class KillIconHud
 		}
 		float lifetime = KillIconPolicy.Lifetime((Plugin.KillIconLifetime != null) ? Plugin.KillIconLifetime.Value : 2.2f);
 		return KillIconPolicy.Alpha(Time.unscaledTime - killIconSlot.At, lifetime) > 0f;
-	}
-
-	internal static bool CanDrawNow(KillIconDisplay display)
-	{
-		if (!KillIconPolicy.ShouldDrawIcons(visible: true, display))
-		{
-			return false;
-		}
-		try
-		{
-			return CameraManager.GetCurrentCamera() != null;
-		}
-		catch (System.Exception)
-		{
-			return false;
-		}
 	}
 
 	internal static void Tick(float now)
@@ -256,20 +249,18 @@ internal static class KillIconHud
 
 	internal static void Draw()
 	{
+		ResetHidden();
 		if (Queue.Count == 0)
 		{
 			return;
 		}
-		KillIconDisplay display = Display();
-		if (!KillIconPolicy.ShouldDrawIcons(visible: true, display))
-		{
-			return;
-		}
 		Camera currentCamera = CameraManager.GetCurrentCamera();
-		if (currentCamera == null)
+		bool headEnabled = Plugin.KillIconHeadEnabled != null && Plugin.KillIconHeadEnabled.Value;
+		if (!KillViewPolicy.HeadVisible(headEnabled, gameVisible: true, cameraReady: currentCamera != null))
 		{
 			return;
 		}
+		_occluderCount = KillIconOccluders.Collect(currentCamera, Occluders, out _occludersComplete);
 		float unscaledTime = Time.unscaledTime;
 		float lifetime = KillIconPolicy.Lifetime((Plugin.KillIconLifetime != null) ? Plugin.KillIconLifetime.Value : 2.2f);
 		float num = Mathf.Clamp((float)Screen.height / 1080f, 0.75f, 1.6f);
@@ -298,7 +289,7 @@ internal static class KillIconHud
 
 	private static void DrawSlot(in KillIconSlot slot, Camera camera, float now, float lifetime, float size, float badge, float badgeGap)
 	{
-		float num = KillIconPolicy.Alpha(now - slot.At, lifetime);
+		float num = KillViewPolicy.CompositeAlpha(KillIconPolicy.Alpha(now - slot.At, lifetime), (Plugin.KillIconHeadOpacity != null) ? Plugin.KillIconHeadOpacity.Value : KillViewPolicy.DefaultOpacity);
 		if (num <= 0f)
 		{
 			return;
@@ -319,10 +310,27 @@ internal static class KillIconHud
 			float num2 = (float)Screen.height - vector.y;
 			if (HitMarkerPolicy.IsProjectable(vector.z, vector.x, num2, Screen.width, Screen.height, 0f))
 			{
-				Rect position2 = new Rect(vector.x - size * 0.5f, num2 - size * 0.5f, size, size);
+				if (!_occludersComplete)
+				{
+					Hide(slot.Token);
+					return;
+				}
+				float badgeExtent = 0f;
+				if (KillIconPolicy.MarkFor(slot.Flight) != FlightMark.None && badge > 1f)
+				{
+					badgeExtent = badgeGap + badge;
+				}
+				ScreenBox iconBox = new ScreenBox(vector.x - size * 0.5f, num2 - size * 0.5f, vector.x + size * 0.5f, num2 + size * 0.5f + badgeExtent);
+				IconPlacement placement = KillViewPolicy.ResolvePlacement(iconBox, Occluders, _occluderCount, 0f, Screen.height);
+				if (placement.Hidden)
+				{
+					Hide(slot.Token);
+					return;
+				}
+				Rect drawRect = new Rect(iconBox.Left, placement.Top, size, size);
 				GUI.color = new Color(1f, 1f, 1f, num);
-				GUI.DrawTexture(position2, texture2D, ScaleMode.ScaleToFit, alphaBlend: true);
-				DrawFlightMark(slot.Flight, vector.x, position2.yMax + badgeGap, badge, num);
+				GUI.DrawTexture(drawRect, texture2D, ScaleMode.ScaleToFit, alphaBlend: true);
+				DrawFlightMark(slot.Flight, iconBox.CentreX, drawRect.yMax + badgeGap, badge, num);
 				_shown++;
 			}
 		}
@@ -367,6 +375,31 @@ internal static class KillIconHud
 		}
 		WingColor.Resolve((Plugin.KillIconFlyerColor != null) ? Plugin.KillIconFlyerColor.Value : null, 0.561f, 0.827f, 0.91f, 1f);
 		return new Color(WingColor.Red, WingColor.Green, WingColor.Blue, 1f);
+	}
+
+	private static void ResetHidden()
+	{
+		_hiddenCount = 0;
+	}
+
+	private static void Hide(int token)
+	{
+		if (_hiddenCount < HiddenTokens.Length)
+		{
+			HiddenTokens[_hiddenCount++] = token;
+		}
+	}
+
+	private static bool IsHidden(int token)
+	{
+		for (int i = 0; i < _hiddenCount; i++)
+		{
+			if (HiddenTokens[i] == token)
+			{
+				return true;
+			}
+		}
+		return false;
 	}
 
 	private static void Warn(string stage, string detail)

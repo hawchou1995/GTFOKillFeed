@@ -364,8 +364,12 @@ internal static class FeedbackPolicy
 		return false;
 	}
 
-	internal static bool ShouldReportUnavailableLaunch(int applications, bool alreadyReported)
+	internal static bool ShouldReportUnavailableLaunch(int applications, bool alreadyReported, bool launchActive)
 	{
+		if (!launchActive)
+		{
+			return false;
+		}
 		if (applications == 0)
 		{
 			return !alreadyReported;
@@ -463,23 +467,40 @@ internal static class FeedbackPolicy
 		return true;
 	}
 
-	internal static bool ShouldBreakCorpseLimbs(bool offSceneCleanupApplied)
+	internal static bool ShouldPlayCorpseBurstFx(CorpseSwitches switches)
 	{
-		return !offSceneCleanupApplied;
+		return switches.BurstVisualActive;
 	}
 
-	internal static bool ShouldPlayCorpseBurstFx(bool corpseEffects, bool explosionFx)
+	internal static CorpseBurstPlan BurstPlan(CorpseSwitches switches, float sizeFactor, float strength)
 	{
-		return corpseEffects && explosionFx;
+		int bursts = (ShouldPlayCorpseBurstFx(switches) ? BurstCount(sizeFactor, strength) : 0);
+		return new CorpseBurstPlan(bursts, switches.BurstSoundActive);
 	}
 
-	internal static CorpseBurstPlan BurstPlan(bool corpseEffects, bool explosionFx, float sizeFactor, float strength)
+	internal static bool ShouldBreakCorpseLimbs(bool offSceneCleanupApplied, bool dismemberActive)
 	{
-		if (!ShouldPlayCorpseBurstFx(corpseEffects, explosionFx))
-		{
-			return new CorpseBurstPlan(0, sound: false);
-		}
-		return new CorpseBurstPlan(BurstCount(sizeFactor, strength), sound: true);
+		return dismemberActive && !offSceneCleanupApplied;
+	}
+
+	internal static bool ShouldApplyLaunch(bool launchActive, bool launchClosed, float age)
+	{
+		return launchActive && !launchClosed && age >= 0.02f;
+	}
+
+	internal static bool ShouldLimitRagdoll(bool launchActive, bool offSceneCleanupApplied)
+	{
+		return launchActive && !offSceneCleanupApplied;
+	}
+
+	internal static bool ShouldTrackChunks(bool chunksActive)
+	{
+		return chunksActive;
+	}
+
+	internal static bool ShouldFlushCorpseSound(bool burstSoundActive)
+	{
+		return burstSoundActive;
 	}
 
 	internal static float Travel(float strength)
