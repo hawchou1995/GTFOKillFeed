@@ -1,0 +1,8 @@
+# original package (baseline artifact, not source, never published)
+/orig/
+# build outputs
+[Bb]in/
+[Oo]bj/
+*.user
+__pycache__/
+*.pyc

@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>GTFOKillFeed</AssemblyName>
+    <RootNamespace></RootNamespace>
+    <EnableDefaultEmbeddedResourceItems>true</EnableDefaultEmbeddedResourceItems>
+    <TargetFramework>net6.0</TargetFramework>
+    <LangVersion>10.0</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <OutputPath>bin\$(Configuration)\</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <GTFO_DIR Condition="'$(GTFO_DIR)' == ''"></GTFO_DIR>
+    <NoWarn>$(NoWarn);CS0169;CS0414;CS0649;CS0108;CS0114;CS0618;CS0672;CS0809;CS3021;CS8981</NoWarn>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <Target Name="RequireGtfoDir" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="'$(GTFO_DIR)' == ''" Text="GTFO_DIR is not set. Point it at a directory containing BepInEx/core and BepInEx/interop (e.g. -p:GTFO_DIR=/path/to/Survival)." />
+  </Target>
+
+  <ItemGroup>
+    <_GTFOAssembly Include="$(GTFO_DIR)\BepInEx\core\*.dll" Exclude="$(GTFO_DIR)\BepInEx\core\dobby.dll" />
+    <_GTFOAssembly Include="$(GTFO_DIR)\BepInEx\interop\*.dll" />
+    <Reference Include="@(_GTFOAssembly)">
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Remove="KillFeed.EnemyNames.defaults.json" />
+    <None Remove="KillFeed.Audio.*.wav" />
+    <EmbeddedResource Include="KillFeed.EnemyNames.defaults.json" LogicalName="KillFeed.EnemyNames.defaults.json" />
+    <EmbeddedResource Include="KillFeed.Audio.*.wav" />
+  </ItemGroup>
+</Project>
