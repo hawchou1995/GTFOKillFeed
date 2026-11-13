@@ -1,340 +1,272 @@
 using System;
-using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 namespace HawChow.GTFOKillFeed;
 
+// Plays the shipped PCM cues through Win32 waveOut. GTFO never touches UnityEngine.AudioSource /
+// AudioClip / AudioListener (verified against the interop assemblies), so a Unity AudioSource would
+// be silent in this game; waveOut is the path that does not depend on either Wwise or Unity audio.
+//
+// Allocation discipline: the device handles, the unmanaged mixing buffer and the WAVEHDR are created once
+// per open (Plugin.Load warms them up when HitSound/Enabled is true at load). Playing a cue copies the
+// samples into that fixed buffer and re-arms the header, so the per-event cost is one bounded copy - no new
+// objects, no scene searches, no per-frame work.
+// Honest exception: with the cues switched OFF at load nothing is opened, so the FIRST cue after a hot
+// enable does pay for six waveOutOpen calls and their allocations, inside that damage callback. Only the
+// steady state is allocation-free.
 internal static class CueWavePlayer
 {
-	private struct WaveFormatEx
-	{
-		internal ushort FormatTag;
+    internal const int VoiceCount = 6;
+    internal const int MaxCueSamples = 30720; // 640 ms at 48 kHz, above the longest shipped cue
+    internal const int SampleRate = 48000;
+    internal const int Channels = 1;
+    internal const int BitsPerSample = 16;
 
-		internal ushort ChannelCount;
+    private const uint WaveMapper = 0xFFFFFFFFu;
+    private const uint CallbackNull = 0x00000000u;
+    private const int RetryDelayMs = 5000;
 
-		internal uint SamplesPerSecond;
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WaveFormatEx
+    {
+        internal ushort FormatTag;
+        internal ushort ChannelCount;
+        internal uint SamplesPerSecond;
+        internal uint AverageBytesPerSecond;
+        internal ushort BlockAlign;
+        internal ushort BitsPerSample;
+        internal ushort ExtraSize;
+    }
 
-		internal uint AverageBytesPerSecond;
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WaveHeader
+    {
+        internal IntPtr Data;
+        internal uint BufferLength;
+        internal uint BytesRecorded;
+        internal IntPtr User;
+        internal uint Flags;
+        internal uint Loops;
+        internal IntPtr Next;
+        internal IntPtr Reserved;
+    }
 
-		internal ushort BlockAlign;
+    [DllImport("winmm.dll", SetLastError = true)]
+    private static extern int waveOutOpen(out IntPtr handle, uint deviceId, ref WaveFormatEx format, IntPtr callback, IntPtr instance, uint flags);
 
-		internal ushort BitsPerSample;
+    [DllImport("winmm.dll", SetLastError = true)]
+    private static extern int waveOutPrepareHeader(IntPtr handle, IntPtr header, int headerSize);
 
-		internal ushort ExtraSize;
-	}
+    [DllImport("winmm.dll", SetLastError = true)]
+    private static extern int waveOutWrite(IntPtr handle, IntPtr header, int headerSize);
 
-	private struct WaveHeader
-	{
-		internal System.IntPtr Data;
+    [DllImport("winmm.dll", SetLastError = true)]
+    private static extern int waveOutReset(IntPtr handle);
 
-		internal uint BufferLength;
+    [DllImport("winmm.dll", SetLastError = true)]
+    private static extern int waveOutUnprepareHeader(IntPtr handle, IntPtr header, int headerSize);
 
-		internal uint BytesRecorded;
+    [DllImport("winmm.dll", SetLastError = true)]
+    private static extern int waveOutClose(IntPtr handle);
 
-		internal System.IntPtr User;
+    private sealed class Voice
+    {
+        internal IntPtr Handle;
+        internal IntPtr Header;
+        internal IntPtr Data;
+        internal bool Ready;
+        internal long EndsAt; // Environment.TickCount64 deadline of the cue currently in flight
+    }
 
-		internal uint Flags;
+    private static readonly Voice[] Voices = new Voice[VoiceCount];
+    private static readonly short[] Mix = new short[MaxCueSamples];
+    // The damage path is not guaranteed to be single-threaded (KillTracker keeps its re-entrancy scope
+    // thread-static for exactly that reason), and Mix / the voice table / the device handles are shared
+    // static state, so every device-touching call goes through one gate. Cost is one uncontended lock
+    // per hit event, never per frame.
+    private static readonly object Gate = new object();
+    private static int _nextVoice;
+    private static int _headerSize;
+    private static bool _unavailable;
+    private static long _retryAfter;
 
-		internal uint Loops;
+    internal static bool Available => !_unavailable;
+    internal static int Failures { get; private set; }
 
-		internal System.IntPtr Next;
+    // Called from Plugin.Load so the six device opens never land inside a damage callback - but only when the
+    // cues are enabled at load. With them off this is a no-op, and the first cue after a hot enable pays the
+    // opens inside that damage callback (see the class comment: the steady state, not the first, is free).
+    internal static void Warmup()
+    {
+        lock (Gate) EnsureOpen();
+    }
 
-		internal System.IntPtr Reserved;
-	}
+    private static void EnsureOpen()
+    {
+        if (Voices[0] != null && Voices[0].Ready) return;
+        long now = Environment.TickCount64;
+        if (_unavailable && now < _retryAfter) return;
+        _unavailable = false;
+        ReleaseVoices();
+        try
+        {
+            _headerSize = Marshal.SizeOf<WaveHeader>();
+            var format = new WaveFormatEx
+            {
+                FormatTag = 1,
+                ChannelCount = Channels,
+                SamplesPerSecond = SampleRate,
+                AverageBytesPerSecond = (uint)(SampleRate * Channels * BitsPerSample / 8),
+                BlockAlign = (ushort)(Channels * BitsPerSample / 8),
+                BitsPerSample = BitsPerSample,
+                ExtraSize = 0,
+            };
+            for (int i = 0; i < VoiceCount; i++)
+            {
+                var voice = new Voice();
+                Voices[i] = voice;
+                if (waveOutOpen(out voice.Handle, WaveMapper, ref format, IntPtr.Zero, IntPtr.Zero, CallbackNull) != 0)
+                {
+                    Fail();
+                    return;
+                }
+                voice.Data = Marshal.AllocHGlobal(MaxCueSamples * sizeof(short));
+                voice.Header = Marshal.AllocHGlobal(_headerSize);
+                var header = new WaveHeader { Data = voice.Data, BufferLength = (uint)(MaxCueSamples * sizeof(short)) };
+                Marshal.StructureToPtr(header, voice.Header, false);
+                if (waveOutPrepareHeader(voice.Handle, voice.Header, _headerSize) != 0)
+                {
+                    Fail();
+                    return;
+                }
+                voice.Ready = true;
+            }
+        }
+        catch (Exception)
+        {
+            Fail();
+        }
+    }
 
-	private sealed class Voice
-	{
-		internal System.IntPtr Handle;
+    // A failed open never becomes permanent: the half-opened voices are rolled back and the next call
+    // after a short backoff tries again (a Bluetooth switch or an exclusive-mode grab is transient).
+    private static void Fail()
+    {
+        Failures++;
+        _unavailable = true;
+        _retryAfter = Environment.TickCount64 + RetryDelayMs;
+        ReleaseVoices();
+    }
 
-		internal System.IntPtr Header;
+    private static void ReleaseVoices()
+    {
+        for (int i = 0; i < VoiceCount; i++)
+        {
+            var voice = Voices[i];
+            Voices[i] = null;
+            if (voice == null) continue;
+            try
+            {
+                if (voice.Handle != IntPtr.Zero)
+                {
+                    waveOutReset(voice.Handle);
+                    if (voice.Header != IntPtr.Zero) waveOutUnprepareHeader(voice.Handle, voice.Header, _headerSize);
+                    waveOutClose(voice.Handle);
+                    voice.Handle = IntPtr.Zero;
+                }
+            }
+            catch (Exception) { }
+            if (voice.Header != IntPtr.Zero) { try { Marshal.FreeHGlobal(voice.Header); } catch (Exception) { } voice.Header = IntPtr.Zero; }
+            if (voice.Data != IntPtr.Zero) { try { Marshal.FreeHGlobal(voice.Data); } catch (Exception) { } voice.Data = IntPtr.Zero; }
+            voice.Ready = false;
+            voice.EndsAt = 0;
+        }
+        _nextVoice = 0;
+    }
 
-		internal System.IntPtr Data;
+    // samples is the decoded cue; count its length. volume is already clamped by the policy.
+    internal static bool Play(short[] samples, int count, float volume)
+    {
+        if (samples == null || count <= 0) return false;
+        lock (Gate)
+        {
+            EnsureOpen();
+            if (_unavailable) return false;
+            if (count > MaxCueSamples) count = MaxCueSamples;
+            if (count > samples.Length) count = samples.Length;
+            var voice = PickVoice(Environment.TickCount64);
+            if (voice == null) return false;
+            try
+            {
+                // Stop before touching the buffer: waveOutReset returns with the header done, so the
+                // device can no longer be reading the samples this voice is about to overwrite.
+                waveOutReset(voice.Handle);
+                for (int i = 0; i < count; i++)
+                {
+                    int value = (int)(samples[i] * volume);
+                    if (value > short.MaxValue) value = short.MaxValue;
+                    else if (value < short.MinValue) value = short.MinValue;
+                    Mix[i] = (short)value;
+                }
+                Marshal.Copy(Mix, 0, voice.Data, count);
+                var header = Marshal.PtrToStructure<WaveHeader>(voice.Header);
+                header.BufferLength = (uint)(count * sizeof(short));
+                header.BytesRecorded = 0;
+                Marshal.StructureToPtr(header, voice.Header, false);
+                if (waveOutWrite(voice.Handle, voice.Header, _headerSize) != 0)
+                {
+                    Failures++;
+                    return false;
+                }
+                voice.EndsAt = Environment.TickCount64 + (count * 1000L / SampleRate) + 40;
+                return true;
+            }
+            catch (Exception)
+            {
+                Failures++;
+                return false;
+            }
+        }
+    }
 
-		internal bool Ready;
+    // Round-robin over the voices that have finished; when every voice is still playing, the one with
+    // the shortest remaining cue is reused (the game cuts the least audio that way) instead of always
+    // cutting the oldest slot.
+    private static Voice PickVoice(long now)
+    {
+        for (int i = 0; i < VoiceCount; i++)
+        {
+            int index = (_nextVoice + i) % VoiceCount;
+            var voice = Voices[index];
+            if (voice != null && voice.Ready && voice.EndsAt <= now)
+            {
+                _nextVoice = (index + 1) % VoiceCount;
+                return voice;
+            }
+        }
+        Voice soonest = null;
+        int soonestIndex = -1;
+        for (int i = 0; i < VoiceCount; i++)
+        {
+            var voice = Voices[i];
+            if (voice == null || !voice.Ready) continue;
+            if (soonest == null || voice.EndsAt < soonest.EndsAt)
+            {
+                soonest = voice;
+                soonestIndex = i;
+            }
+        }
+        if (soonestIndex >= 0) _nextVoice = (soonestIndex + 1) % VoiceCount;
+        return soonest;
+    }
 
-		internal long EndsAt;
-	}
-
-	internal const int VoiceCount = 6;
-
-	internal const int MaxCueSamples = 30720;
-
-	internal const int SampleRate = 48000;
-
-	internal const int Channels = 1;
-
-	internal const int BitsPerSample = 16;
-
-	private const uint WaveMapper = 4294967295u;
-
-	private const uint CallbackNull = 0u;
-
-	private const int RetryDelayMs = 5000;
-
-	private static readonly Voice[] Voices = new Voice[6];
-
-	private static readonly short[] Mix = new short[30720];
-
-	private static readonly object Gate = new object();
-
-	private static int _nextVoice;
-
-	private static int _headerSize;
-
-	private static bool _unavailable;
-
-	private static long _retryAfter;
-
-	internal static bool Available => !_unavailable;
-
-	internal static int Failures
-	{
-		get;
-		private set;
-	}
-
-	[DllImport("winmm.dll", SetLastError = true)]
-	private static extern int waveOutOpen(out System.IntPtr handle, uint deviceId, ref WaveFormatEx format, System.IntPtr callback, System.IntPtr instance, uint flags);
-
-	[DllImport("winmm.dll", SetLastError = true)]
-	private static extern int waveOutPrepareHeader(System.IntPtr handle, System.IntPtr header, int headerSize);
-
-	[DllImport("winmm.dll", SetLastError = true)]
-	private static extern int waveOutWrite(System.IntPtr handle, System.IntPtr header, int headerSize);
-
-	[DllImport("winmm.dll", SetLastError = true)]
-	private static extern int waveOutReset(System.IntPtr handle);
-
-	[DllImport("winmm.dll", SetLastError = true)]
-	private static extern int waveOutUnprepareHeader(System.IntPtr handle, System.IntPtr header, int headerSize);
-
-	[DllImport("winmm.dll", SetLastError = true)]
-	private static extern int waveOutClose(System.IntPtr handle);
-
-	internal static void Warmup()
-	{
-		lock (Gate)
-		{
-			EnsureOpen();
-		}
-	}
-
-	private static void EnsureOpen()
-	{
-		if (Voices[0] != null && Voices[0].Ready)
-		{
-			return;
-		}
-		long tickCount = Environment.TickCount64;
-		if (_unavailable && tickCount < _retryAfter)
-		{
-			return;
-		}
-		_unavailable = false;
-		ReleaseVoices();
-		try
-		{
-			_headerSize = Marshal.SizeOf<WaveHeader>();
-			WaveFormatEx waveFormatEx = default(WaveFormatEx);
-			waveFormatEx.FormatTag = 1;
-			waveFormatEx.ChannelCount = 1;
-			waveFormatEx.SamplesPerSecond = 48000u;
-			waveFormatEx.AverageBytesPerSecond = 96000u;
-			waveFormatEx.BlockAlign = 2;
-			waveFormatEx.BitsPerSample = 16;
-			waveFormatEx.ExtraSize = 0;
-			WaveFormatEx format = waveFormatEx;
-			for (int i = 0; i < 6; i++)
-			{
-				Voice voice = new Voice();
-				Voices[i] = voice;
-				if (waveOutOpen(out voice.Handle, 4294967295u, ref format, System.IntPtr.Zero, System.IntPtr.Zero, 0u) != 0)
-				{
-					Fail();
-					break;
-				}
-				voice.Data = Marshal.AllocHGlobal(61440);
-				voice.Header = Marshal.AllocHGlobal(_headerSize);
-				WaveHeader waveHeader = default(WaveHeader);
-				waveHeader.Data = voice.Data;
-				waveHeader.BufferLength = 61440u;
-				Marshal.StructureToPtr<WaveHeader>(waveHeader, voice.Header, false);
-				if (waveOutPrepareHeader(voice.Handle, voice.Header, _headerSize) != 0)
-				{
-					Fail();
-					break;
-				}
-				voice.Ready = true;
-			}
-		}
-		catch (System.Exception)
-		{
-			Fail();
-		}
-	}
-
-	private static void Fail()
-	{
-		Failures++;
-		_unavailable = true;
-		_retryAfter = Environment.TickCount64 + 5000;
-		ReleaseVoices();
-	}
-
-	private static void ReleaseVoices()
-	{
-		for (int i = 0; i < 6; i++)
-		{
-			Voice voice = Voices[i];
-			Voices[i] = null;
-			if (voice == null)
-			{
-				continue;
-			}
-			try
-			{
-				if (voice.Handle != System.IntPtr.Zero)
-				{
-					waveOutReset(voice.Handle);
-					if (voice.Header != System.IntPtr.Zero)
-					{
-						waveOutUnprepareHeader(voice.Handle, voice.Header, _headerSize);
-					}
-					waveOutClose(voice.Handle);
-					voice.Handle = System.IntPtr.Zero;
-				}
-			}
-			catch (System.Exception)
-			{
-			}
-			if (voice.Header != System.IntPtr.Zero)
-			{
-				try
-				{
-					Marshal.FreeHGlobal(voice.Header);
-				}
-				catch (System.Exception)
-				{
-				}
-				voice.Header = System.IntPtr.Zero;
-			}
-			if (voice.Data != System.IntPtr.Zero)
-			{
-				try
-				{
-					Marshal.FreeHGlobal(voice.Data);
-				}
-				catch (System.Exception)
-				{
-				}
-				voice.Data = System.IntPtr.Zero;
-			}
-			voice.Ready = false;
-			voice.EndsAt = 0L;
-		}
-		_nextVoice = 0;
-	}
-
-	internal static bool Play(short[] samples, int count, float volume)
-	{
-		if (samples == null || count <= 0)
-		{
-			return false;
-		}
-		lock (Gate)
-		{
-			EnsureOpen();
-			if (_unavailable)
-			{
-				return false;
-			}
-			if (count > 30720)
-			{
-				count = 30720;
-			}
-			if (count > samples.Length)
-			{
-				count = samples.Length;
-			}
-			Voice voice = PickVoice(Environment.TickCount64);
-			if (voice == null)
-			{
-				return false;
-			}
-			try
-			{
-				waveOutReset(voice.Handle);
-				for (int i = 0; i < count; i++)
-				{
-					int num = (int)((float)samples[i] * volume);
-					if (num > 32767)
-					{
-						num = 32767;
-					}
-					else if (num < -32768)
-					{
-						num = -32768;
-					}
-					Mix[i] = (short)num;
-				}
-				Marshal.Copy(Mix, 0, voice.Data, count);
-				WaveHeader waveHeader = Marshal.PtrToStructure<WaveHeader>(voice.Header);
-				waveHeader.BufferLength = (uint)(count * 2);
-				waveHeader.BytesRecorded = 0u;
-				Marshal.StructureToPtr<WaveHeader>(waveHeader, voice.Header, false);
-				if (waveOutWrite(voice.Handle, voice.Header, _headerSize) != 0)
-				{
-					Failures++;
-					return false;
-				}
-				voice.EndsAt = Environment.TickCount64 + (long)count * 1000L / 48000 + 40;
-				return true;
-			}
-			catch (System.Exception)
-			{
-				Failures++;
-				return false;
-			}
-		}
-	}
-
-	private static Voice PickVoice(long now)
-	{
-		for (int i = 0; i < 6; i++)
-		{
-			int num = (_nextVoice + i) % 6;
-			Voice voice = Voices[num];
-			if (voice != null && voice.Ready && voice.EndsAt <= now)
-			{
-				_nextVoice = (num + 1) % 6;
-				return voice;
-			}
-		}
-		Voice voice2 = null;
-		int num2 = -1;
-		for (int j = 0; j < 6; j++)
-		{
-			Voice voice3 = Voices[j];
-			if (voice3 != null && voice3.Ready && (voice2 == null || voice3.EndsAt < voice2.EndsAt))
-			{
-				voice2 = voice3;
-				num2 = j;
-			}
-		}
-		if (num2 >= 0)
-		{
-			_nextVoice = (num2 + 1) % 6;
-		}
-		return voice2;
-	}
-
-	internal static void Shutdown()
-	{
-		lock (Gate)
-		{
-			ReleaseVoices();
-			_unavailable = false;
-			_retryAfter = 0L;
-		}
-	}
+    internal static void Shutdown()
+    {
+        lock (Gate)
+        {
+            ReleaseVoices();
+            _unavailable = false;
+            _retryAfter = 0;
+        }
+    }
 }

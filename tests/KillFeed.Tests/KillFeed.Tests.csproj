@@ -15,28 +15,19 @@
 
   <ItemGroup>
     <!-- Production sources are linked, not copied: the tests execute the same policy code the plugin ships. -->
+    <!-- 1.2.19 tree: CorpseBurstPlan/HitKind live in FeedbackPolicy.cs, HitSoundState/HitSoundStyle/
+         HitCueKind in HitSoundPolicy.cs, HitMarkerKind/HitMarkerAction in HitMarkerPolicy.cs, and
+         KillCard/KillDecision/KillKind/KillTier/KillTierBoundaries/KillFlight in KillPolicy.cs, so the
+         decompiled one-file-per-type units are no longer linked here. -->
     <Compile Include="..\..\src\HawChow.GTFOKillFeed\CfgPresence.cs" Link="prod\CfgPresence.cs" />
     <Compile Include="..\..\src\HawChow.GTFOKillFeed\SoundSettings.cs" Link="prod\SoundSettings.cs" />
     <Compile Include="..\..\src\HawChow.GTFOKillFeed\SoundConfigPlan.cs" Link="prod\SoundConfigPlan.cs" />
     <Compile Include="..\..\src\HawChow.GTFOKillFeed\SoundConfigBinding.cs" Link="prod\SoundConfigBinding.cs" />
     <Compile Include="..\..\src\HawChow.GTFOKillFeed\CorpseSwitches.cs" Link="prod\CorpseSwitches.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\CorpseBurstPlan.cs" Link="prod\CorpseBurstPlan.cs" />
     <Compile Include="..\..\src\HawChow.GTFOKillFeed\HitSoundPolicy.cs" Link="prod\HitSoundPolicy.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\HitSoundState.cs" Link="prod\HitSoundState.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\HitSoundStyle.cs" Link="prod\HitSoundStyle.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\HitCueKind.cs" Link="prod\HitCueKind.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\HitKind.cs" Link="prod\HitKind.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\KillTier.cs" Link="prod\KillTier.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\KillFlight.cs" Link="prod\KillFlight.cs" />
     <Compile Include="..\..\src\HawChow.GTFOKillFeed\HitMarkerPolicy.cs" Link="prod\HitMarkerPolicy.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\HitMarkerKind.cs" Link="prod\HitMarkerKind.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\HitMarkerAction.cs" Link="prod\HitMarkerAction.cs" />
     <Compile Include="..\..\src\HawChow.GTFOKillFeed\FeedbackPolicy.cs" Link="prod\FeedbackPolicy.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\KillCard.cs" Link="prod\KillCard.cs" />
     <Compile Include="..\..\src\HawChow.GTFOKillFeed\KillPolicy.cs" Link="prod\KillPolicy.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\KillDecision.cs" Link="prod\KillDecision.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\KillTierBoundaries.cs" Link="prod\KillTierBoundaries.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\KillKind.cs" Link="prod\KillKind.cs" />
     <Compile Include="..\..\src\HawChow.GTFOKillFeed\ConfigHotReloadGate.cs" Link="prod\ConfigHotReloadGate.cs" />
     <Compile Include="..\..\src\HawChow.GTFOKillFeed\KillViewPolicy.cs" Link="prod\KillViewPolicy.cs" />
     <Compile Include="..\..\src\HawChow.GTFOKillFeed\KillViewConfigApply.cs" Link="prod\KillViewConfigApply.cs" />

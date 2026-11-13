@@ -2,151 +2,102 @@ using System;
 
 namespace HawChow.GTFOKillFeed;
 
+// Which outline the crosshair-focus bar draws. "Back" means the crosshair ray lands on the enemy's
+// rear hemisphere (the shot direction and the enemy's facing disagree), "weakspot" means the collider
+// under the crosshair belongs to a limb the game flags as a weakspot. Pure arithmetic + colours only.
+internal enum FocusOutlineKind
+{
+    None = 0,
+    Back = 1,
+    Weakspot = 2,
+    Prismatic = 3,
+}
+
 internal static class FocusOutlinePolicy
 {
-	internal const bool DefaultEnabled = true;
+    internal const bool DefaultEnabled = true;
 
-	internal const float BackR = 1f;
+    // Orange for the back, red shared with the existing weakspot token (#E5484D, the shipped
+    // DamageNumbers/WeakspotColor default) so the two reds in the HUD are the same red.
+    internal const float BackR = 1.000f, BackG = 0.541f, BackB = 0.118f;
+    internal const float WeakspotR = 0.898f, WeakspotG = 0.282f, WeakspotB = 0.302f;
 
-	internal const float BackG = 0.541f;
+    // Outline is one border-thickness on each edge, scaled with the bar so it stays proportional at 4K.
+    internal const float MinThicknessPixels = 1.0f;
+    internal const float MaxThicknessPixels = 3.0f;
+    internal const float ThicknessPerBarHeight = 0.30f;
 
-	internal const float BackB = 0.118f;
+    internal static FocusOutlineKind Classify(bool onBack, bool onWeakspot)
+    {
+        if (onBack && onWeakspot) return FocusOutlineKind.Prismatic;
+        if (onWeakspot) return FocusOutlineKind.Weakspot;
+        if (onBack) return FocusOutlineKind.Back;
+        return FocusOutlineKind.None;
+    }
 
-	internal const float WeakspotR = 0.898f;
+    internal static bool ShouldDraw(bool enabled, FocusOutlineKind kind)
+        => enabled && kind != FocusOutlineKind.None;
 
-	internal const float WeakspotG = 0.282f;
+    // Rear hemisphere test: the dot of the enemy's forward axis and the direction from the enemy to
+    // the hit point. A NaN (degenerate transform) is never reported as "back".
+    internal static bool IsBehind(float dot)
+    {
+        if (float.IsNaN(dot) || float.IsInfinity(dot)) return false;
+        return dot < 0f;
+    }
 
-	internal const float WeakspotB = 0.302f;
+    internal static float DirectionDot(float forwardX, float forwardY, float forwardZ,
+        float toHitX, float toHitY, float toHitZ)
+    {
+        float length = (float)Math.Sqrt(toHitX * toHitX + toHitY * toHitY + toHitZ * toHitZ);
+        if (float.IsNaN(length) || float.IsInfinity(length) || length <= 0.0001f) return float.NaN;
+        float dot = (forwardX * toHitX + forwardY * toHitY + forwardZ * toHitZ) / length;
+        return float.IsNaN(dot) || float.IsInfinity(dot) ? float.NaN : dot;
+    }
 
-	internal const float MinThicknessPixels = 1f;
+    internal static float Thickness(float barHeightPixels)
+    {
+        if (float.IsNaN(barHeightPixels) || float.IsInfinity(barHeightPixels)) return MinThicknessPixels;
+        float thickness = barHeightPixels * ThicknessPerBarHeight;
+        if (thickness < MinThicknessPixels) return MinThicknessPixels;
+        if (thickness > MaxThicknessPixels) return MaxThicknessPixels;
+        return thickness;
+    }
 
-	internal const float MaxThicknessPixels = 3f;
+    // The prismatic frame is a foil rim, so it gets a little more body than the flat orange/red one:
+    // at 5 px bar height the flat ring is 1.5 px, which is too thin to show a hue gradient at all.
+    internal const float FoilThicknessPerBarHeight = 0.55f;
+    internal const float FoilMinThicknessPixels = 2f;
+    internal const float FoilMaxThicknessPixels = 5f;
 
-	internal const float ThicknessPerBarHeight = 0.3f;
+    internal static float FoilThickness(float barHeightPixels)
+    {
+        if (float.IsNaN(barHeightPixels) || float.IsInfinity(barHeightPixels)) return FoilMinThicknessPixels;
+        float thickness = barHeightPixels * FoilThicknessPerBarHeight;
+        if (thickness < FoilMinThicknessPixels) return FoilMinThicknessPixels;
+        if (thickness > FoilMaxThicknessPixels) return FoilMaxThicknessPixels;
+        return thickness;
+    }
 
-	internal const float FoilThicknessPerBarHeight = 0.55f;
+    // Prismatic frames are drawn as a foil rim: the hue advances around the perimeter in segments
+    // instead of one flat colour, which is what makes the border read as holographic foil.
+    internal const int FoilFrameSegments = 5; // per edge, 4 edges = 20 segments around the bar
 
-	internal const float FoilMinThicknessPixels = 2f;
+    internal static void FoilFrameColor(int index, int total, float phase, out float red, out float green, out float blue)
+    {
+        int span = total <= 0 ? 1 : total;
+        float t = (index % span) / (float)span;
+        DamageFxPolicy.HueColor(DamageFxPolicy.WrapPhase(phase + t), 0.55f, 1f, out red, out green, out blue);
+    }
 
-	internal const float FoilMaxThicknessPixels = 5f;
-
-	internal const int FoilFrameSegments = 5;
-
-	internal static FocusOutlineKind Classify(bool onBack, bool onWeakspot)
-	{
-		if (onBack && onWeakspot)
-		{
-			return FocusOutlineKind.Prismatic;
-		}
-		if (onWeakspot)
-		{
-			return FocusOutlineKind.Weakspot;
-		}
-		if (onBack)
-		{
-			return FocusOutlineKind.Back;
-		}
-		return FocusOutlineKind.None;
-	}
-
-	internal static bool ShouldDraw(bool enabled, FocusOutlineKind kind)
-	{
-		if (enabled)
-		{
-			return kind != FocusOutlineKind.None;
-		}
-		return false;
-	}
-
-	internal static bool IsBehind(float dot)
-	{
-		if (float.IsNaN(dot) || float.IsInfinity(dot))
-		{
-			return false;
-		}
-		return dot < 0f;
-	}
-
-	internal static float DirectionDot(float forwardX, float forwardY, float forwardZ, float toHitX, float toHitY, float toHitZ)
-	{
-		float num = (float)Math.Sqrt((double)(toHitX * toHitX + toHitY * toHitY + toHitZ * toHitZ));
-		if (float.IsNaN(num) || float.IsInfinity(num) || num <= 0.0001f)
-		{
-			return 0f / 0f;
-		}
-		float num2 = (forwardX * toHitX + forwardY * toHitY + forwardZ * toHitZ) / num;
-		if (!float.IsNaN(num2) && !float.IsInfinity(num2))
-		{
-			return num2;
-		}
-		return 0f / 0f;
-	}
-
-	internal static float Thickness(float barHeightPixels)
-	{
-		if (float.IsNaN(barHeightPixels) || float.IsInfinity(barHeightPixels))
-		{
-			return 1f;
-		}
-		float num = barHeightPixels * 0.3f;
-		if (num < 1f)
-		{
-			return 1f;
-		}
-		if (num > 3f)
-		{
-			return 3f;
-		}
-		return num;
-	}
-
-	internal static float FoilThickness(float barHeightPixels)
-	{
-		if (float.IsNaN(barHeightPixels) || float.IsInfinity(barHeightPixels))
-		{
-			return 2f;
-		}
-		float num = barHeightPixels * 0.55f;
-		if (num < 2f)
-		{
-			return 2f;
-		}
-		if (num > 5f)
-		{
-			return 5f;
-		}
-		return num;
-	}
-
-	internal static void FoilFrameColor(int index, int total, float phase, out float red, out float green, out float blue)
-	{
-		int num = ((total <= 0) ? 1 : total);
-		float num2 = (float)(index % num) / (float)num;
-		DamageFxPolicy.HueColor(DamageFxPolicy.WrapPhase(phase + num2), 0.55f, 1f, out red, out green, out blue);
-	}
-
-	internal static void OutlineColor(FocusOutlineKind kind, float phase, out float red, out float green, out float blue)
-	{
-		switch (kind)
-		{
-		case FocusOutlineKind.Back:
-			red = 1f;
-			green = 0.541f;
-			blue = 0.118f;
-			break;
-		case FocusOutlineKind.Weakspot:
-			red = 0.898f;
-			green = 0.282f;
-			blue = 0.302f;
-			break;
-		case FocusOutlineKind.Prismatic:
-			DamageFxPolicy.PrismaticColor(phase, out red, out green, out blue);
-			break;
-		default:
-			red = 0f;
-			green = 0f;
-			blue = 0f;
-			break;
-		}
-	}
+    internal static void OutlineColor(FocusOutlineKind kind, float phase, out float red, out float green, out float blue)
+    {
+        switch (kind)
+        {
+            case FocusOutlineKind.Back: red = BackR; green = BackG; blue = BackB; return;
+            case FocusOutlineKind.Weakspot: red = WeakspotR; green = WeakspotG; blue = WeakspotB; return;
+            case FocusOutlineKind.Prismatic: DamageFxPolicy.PrismaticColor(phase, out red, out green, out blue); return;
+            default: red = 0f; green = 0f; blue = 0f; return;
+        }
+    }
 }

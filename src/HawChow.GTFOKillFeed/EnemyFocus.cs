@@ -1,7 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Reflection;
-using System.Runtime.CompilerServices;
 using Enemies;
 using GameData;
 using Il2CppInterop.Runtime.InteropTypes.Arrays;
@@ -10,618 +8,408 @@ using UnityEngine;
 
 namespace HawChow.GTFOKillFeed;
 
+// Resolves the one enemy the crosshair is actually pointing at, and the world point above its head.
+// Everything here is read-only: no damage calls, no network packets, no Harmony patches.
 internal static class EnemyFocus
 {
-	private const int RayBufferSize = 48;
+    private const int RayBufferSize = 48;
+    private const float BlockerTolerance = 0.05f;
+    private const float HeadPaddingMetres = 0.12f;
+    // Renderer bounds in GTFO can be inflated by clothing and effect renderers to several metres,
+    // sometimes tens of metres, so they are only trusted inside this window around the anchor.
+    private const float MaxBoundsAboveHeadMetres = 2f;
+    private const float MaxBoundsAboveRootMetres = 6f;
+    private const float MaxBoundsBelowAnchorMetres = 0.6f;
+    private const float FallbackBodyHeightMetres = 1.6f;
 
-	private const float BlockerTolerance = 0.05f;
+    private static readonly Il2CppStructArray<RaycastHit> Hits = new(new RaycastHit[RayBufferSize]);
+    private static Transform _playerRoot;
+    // Bounded per-target cache (review F4): several head consumers run every frame (up to twelve head
+    // icons, the focus bar, the downed teammate marks), so a single slot re-enumerated every Renderer
+    // whenever two targets alternated. HeadBoundsCache keeps one sample per target for its window.
+    private static readonly HeadBoundsCache Bounds = new();
 
-	private const float HeadPaddingMetres = 0.12f;
+    internal static EnemyAgent Target { get; private set; }
+    internal static float Distance { get; private set; }
+    internal static string Reason { get; private set; } = "idle";
+    internal static int MaskValue { get; private set; }
+    internal static int HitsSeen { get; private set; }
+    internal static int EnemyHits { get; private set; }
+    internal static bool GlueGunWielded { get; private set; }
+    // Where the crosshair ray actually landed on the focused enemy, and what that collider belongs to.
+    // The bar's focus outline is decided from these three values only.
+    internal static Vector3 HitPoint { get; private set; }
+    internal static bool HitIsWeakspot { get; private set; }
+    internal static float BackDot { get; private set; } = float.NaN;
+    internal static void Reset()
+    {
+        Target = null;
+        GlueGunWielded = false;
+        Distance = 0f;
+        Reason = "idle";
+        HitsSeen = 0;
+        EnemyHits = 0;
+        Bounds.Clear();
+        HitPoint = Vector3.zero;
+        HitIsWeakspot = false;
+        BackDot = float.NaN;
+    }
 
-	private const float MaxBoundsAboveHeadMetres = 2f;
+    internal static void Update(float configuredMaxDistance)
+    {
+        GlueGunWielded = false;
+        Target = null;
+        Distance = 0f;
+        HitsSeen = 0;
+        EnemyHits = 0;
+        HitPoint = Vector3.zero;
+        HitIsWeakspot = false;
+        BackDot = float.NaN;
+        float maxDistance = BarPolicy.MaxDistance(configuredMaxDistance);
+        try
+        {
+            if (!PlayerManager.HasLocalPlayerAgent())
+            {
+                Reason = "no-local-player";
+                return;
+            }
+            PlayerAgent player = PlayerManager.GetLocalPlayerAgent();
+            if (player == null)
+            {
+                Reason = "no-local-player";
+                return;
+            }
+            if (!player.IsLocallyOwned)
+            {
+                Reason = "not-local-owner";
+                return;
+            }
+            try
+            {
+                // WieldedItem is typed ItemEquippable, so the shared probe must compare native classes.
+                GlueGunWielded = GlueGunWield.IsHeld(player.FPItemHolder);
+            }
+            catch { GlueGunWielded = false; }
+            FPSCamera fpsCamera = player.FPSCamera;
+            if (fpsCamera == null)
+            {
+                Reason = "no-camera";
+                return;
+            }
+            Vector3 origin = fpsCamera.CameraRayPos;
+            if (!KillPolicy.IsFinite(origin.x) || !KillPolicy.IsFinite(origin.y) || !KillPolicy.IsFinite(origin.z) || origin.sqrMagnitude < 0.0001f)
+                origin = fpsCamera.Position;
+            Vector3 direction = fpsCamera.CameraRayDir;
+            if (!KillPolicy.IsFinite(direction.x) || !KillPolicy.IsFinite(direction.y) || !KillPolicy.IsFinite(direction.z) || direction.sqrMagnitude < 0.0001f)
+                direction = fpsCamera.Forward;
+            if (!KillPolicy.IsFinite(origin.x) || !KillPolicy.IsFinite(origin.y) || !KillPolicy.IsFinite(origin.z) ||
+                !KillPolicy.IsFinite(direction.x) || !KillPolicy.IsFinite(direction.y) || !KillPolicy.IsFinite(direction.z) ||
+                direction.sqrMagnitude < 0.0001f)
+            {
+                Reason = "no-ray";
+                return;
+            }
+            direction = direction.normalized;
+            _playerRoot = player.transform;
 
-	private const float MaxBoundsAboveRootMetres = 6f;
+            int mask = LayerManager.MASK_BULLETWEAPON_RAY
+                | LayerManager.MASK_CAMERA_RAY
+                | LayerManager.MASK_ENEMY
+                | LayerManager.MASK_ENEMY_DAMAGABLE;
+            MaskValue = mask;
 
-	private const float MaxBoundsBelowAnchorMetres = 0.6f;
+            Scan(origin, direction, maxDistance, mask, out EnemyAgent nearest, out float nearestDistance, out float blocker, out Vector3 nearestPoint, out Collider nearestCollider);
+            if (nearest == null)
+            {
+                // No enemy collider answered the curated masks, so probe the enemy layers directly.
+                // The curated pass still supplies the blocker distance, so the fallback can never
+                // reveal an enemy that is actually behind geometry.
+                float curatedBlocker = blocker;
+                int enemyMask = LayerBit(LayerManager.LAYER_ENEMY)
+                    | LayerBit(LayerManager.LAYER_ENEMY_DAMAGABLE)
+                    | LayerManager.MASK_ENEMY
+                    | LayerManager.MASK_ENEMY_DAMAGABLE;
+                Scan(origin, direction, maxDistance, enemyMask, out EnemyAgent fallback, out float fallbackDistance, out _, out Vector3 fallbackPoint, out Collider fallbackCollider);
+                if (fallback != null && fallbackDistance <= curatedBlocker + BlockerTolerance)
+                {
+                    nearest = fallback;
+                    nearestDistance = fallbackDistance;
+                    blocker = curatedBlocker;
+                    nearestPoint = fallbackPoint;
+                    nearestCollider = fallbackCollider;
+                }
+            }
 
-	private const float FallbackBodyHeightMetres = 1.6f;
+            if (nearest == null)
+            {
+                Reason = "no-enemy";
+                return;
+            }
+            if (nearestDistance > blocker + BlockerTolerance)
+            {
+                Reason = "blocked";
+                return;
+            }
+            if (!IsAlive(nearest))
+            {
+                Reason = "target-not-alive";
+                return;
+            }
+            Target = nearest;
+            CaptureHitGeometry(nearest, nearestPoint, nearestCollider);
+            Distance = nearestDistance;
+            Reason = "enemy";
+        }
+        catch (Exception error)
+        {
+            Target = null;
+            Distance = 0f;
+            Reason = "error:" + error.GetType().Name;
+        }
+    }
 
-	private static readonly Il2CppStructArray<RaycastHit> Hits = new Il2CppStructArray<RaycastHit>(new RaycastHit[48]);
+    private static void Scan(Vector3 origin, Vector3 direction, float maxDistance, int mask,
+        out EnemyAgent nearest, out float nearestDistance, out float blocker,
+        out Vector3 nearestPoint, out Collider nearestCollider)
+    {
+        nearest = null;
+        nearestDistance = float.PositiveInfinity;
+        blocker = float.PositiveInfinity;
+        nearestPoint = Vector3.zero;
+        nearestCollider = null;
+        int count = Physics.RaycastNonAlloc(origin, direction, Hits, maxDistance, mask, QueryTriggerInteraction.Ignore);
+        if (count <= 0) return;
+        HitsSeen += count;
+        int bounded = count < Hits.Length ? count : Hits.Length;
+        for (int i = 0; i < bounded; i++)
+        {
+            RaycastHit hit = Hits[i];
+            Collider collider = hit.collider;
+            if (collider == null) continue;
+            Transform hitTransform = collider.transform;
+            if (hitTransform == null || IsSelf(hitTransform)) continue;
+            float distance = hit.distance;
+            if (!KillPolicy.IsFinite(distance) || distance < 0f) continue;
+            if (distance < blocker) blocker = distance;
+            EnemyAgent enemy = Resolve(collider);
+            if (enemy == null) continue;
+            EnemyHits++;
+            if (distance < nearestDistance)
+            {
+                nearestDistance = distance;
+                nearest = enemy;
+                nearestPoint = hit.point;
+                nearestCollider = collider;
+            }
+        }
+    }
 
-	private static Transform _playerRoot;
+    // Records the accepted hit for the focus outline. The weakspot test reads the limb the collider
+    // belongs to; the back test is the dot of the enemy's forward axis against the direction from the
+    // enemy to the hit point. Any failure leaves BackDot NaN, and the policy treats NaN as "not back",
+    // so a broken transform can never paint a misleading orange outline.
+    private static void CaptureHitGeometry(EnemyAgent enemy, Vector3 point, Collider collider)
+    {
+        HitPoint = point;
+        bool weakspot = false;
+        try
+        {
+            Dam_EnemyDamageLimb limb = collider != null ? collider.GetComponentInParent<Dam_EnemyDamageLimb>() : null;
+            if (limb != null) weakspot = limb.m_type == eLimbDamageType.Weakspot;
+        }
+        catch (Exception) { weakspot = false; }
+        HitIsWeakspot = weakspot;
+        float dot = float.NaN;
+        try
+        {
+            if (enemy != null)
+            {
+                Vector3 forward = enemy.transform.forward;
+                Vector3 toHit = point - enemy.transform.position;
+                dot = FocusOutlinePolicy.DirectionDot(forward.x, forward.y, forward.z, toHit.x, toHit.y, toHit.z);
+            }
+        }
+        catch (Exception) { dot = float.NaN; }
+        BackDot = dot;
+    }
 
-	private static readonly HeadBoundsCache Bounds = new HeadBoundsCache();
+    private static EnemyAgent Resolve(Collider collider)
+    {
+        try { return collider.GetComponentInParent<EnemyAgent>(); }
+        catch { return null; }
+    }
 
-	internal static EnemyAgent Target
-	{
-		get;
-		private set;
-	}
+    private static bool IsAlive(EnemyAgent enemy)
+    {
+        try
+        {
+            if (enemy == null || !enemy.m_alive) return false;
+            Dam_EnemyDamageBase damage = enemy.Damage;
+            if (damage == null) return false;
+            float health = damage.Health;
+            return KillPolicy.IsFinite(health) && health > 0f;
+        }
+        catch { return false; }
+    }
 
-	internal static float Distance
-	{
-		get;
-		private set;
-	}
+    private static bool IsSelf(Transform candidate)
+    {
+        if (_playerRoot == null || candidate == null) return false;
+        try { return candidate == _playerRoot || candidate.IsChildOf(_playerRoot); }
+        catch { return false; }
+    }
 
-	internal static string Reason
-	{
-		get;
-		private set;
-	} = "idle";
+    private static int LayerBit(int layer) => layer >= 0 && layer < 32 ? 1 << layer : 0;
 
+    // The game's own data-block name, matching what KillTracker already writes into kill cards.
+    internal static string RawNameOf(EnemyAgent enemy)
+    {
+        if (enemy == null) return "Unknown";
+        try
+        {
+            EnemyDataBlock block = GameDataBlockBase<EnemyDataBlock>.GetBlock(enemy.EnemyDataID);
+            if (block != null && !string.IsNullOrWhiteSpace(block.name)) return block.name;
+        }
+        catch { }
+        try { return enemy.name; } catch { return "Unknown"; }
+    }
 
-	internal static int MaskValue
-	{
-		get;
-		private set;
-	}
+    // Reports the enemy's configured weakspot limb, independent of the crosshair's current hit point.
+    // Reads every configured weakspot's current runtime multiplier; this includes live mod adjustments.
+    internal static string ResolveWeakspotParts(EnemyAgent enemy, string language)
+    {
+        if (enemy == null) return string.Empty;
+        try
+        {
+            var labels = new List<WeakspotPartMultiplier>();
+            var seen = new HashSet<IntPtr>();
+            Dam_EnemyDamageLimb head = null;
+            try { head = enemy.m_headLimb; } catch { }
+            Dam_EnemyDamageBase damage = enemy.Damage;
+            var limbs = damage != null ? damage.DamageLimbs : null;
+            bool headIncluded = false;
+            if (limbs != null)
+            {
+                for (int i = 0; i < limbs.Length; i++)
+                {
+                    Dam_EnemyDamageLimb limb = limbs[i];
+                    if (limb == null || limb.m_type != eLimbDamageType.Weakspot) continue;
+                    IntPtr pointer = SafeLimbPointer(limb);
+                    if (pointer != IntPtr.Zero && !seen.Add(pointer)) continue;
+                    bool isHead = head != null && SameLimb(limb, head);
+                    if (isHead) headIncluded = true;
+                    string label = isHead ? BarPolicy.HeadPartLabel(language) : BarPolicy.PartLabel(WeakspotDebugName(limb), language);
+                    float multiplier;
+                    try { multiplier = limb.m_weakspotDamageMulti; } catch { multiplier = float.NaN; }
+                    labels.Add(new WeakspotPartMultiplier(label, multiplier));
+                }
+            }
+            if (!headIncluded && head != null && head.m_type == eLimbDamageType.Weakspot)
+            {
+                float multiplier;
+                try { multiplier = head.m_weakspotDamageMulti; } catch { multiplier = float.NaN; }
+                labels.Add(new WeakspotPartMultiplier(BarPolicy.HeadPartLabel(language), multiplier));
+            }
+            return BarPolicy.WeakspotTags(labels, language);
+        }
+        catch { return string.Empty; }
+    }
+    internal static float GlueToleranceOf(EnemyAgent enemy)
+    {
+        if (enemy == null) return float.NaN;
+        try
+        {
+            GameData.EnemyBalancingDataBlock balancing = enemy.EnemyBalancingData;
+            return balancing != null ? balancing.GlueTolerance : float.NaN;
+        }
+        catch { return float.NaN; }
+    }
 
-	internal static int HitsSeen
-	{
-		get;
-		private set;
-	}
+    private static string WeakspotDebugName(Dam_EnemyDamageLimb limb)
+    {
+        try { if (!string.IsNullOrWhiteSpace(limb.DebugName)) return limb.DebugName; } catch { }
+        try { return limb.transform != null ? limb.transform.name : string.Empty; } catch { return string.Empty; }
+    }
 
-	internal static int EnemyHits
-	{
-		get;
-		private set;
-	}
+    private static IntPtr SafeLimbPointer(Dam_EnemyDamageLimb limb)
+    {
+        try { return limb != null ? limb.Pointer : IntPtr.Zero; } catch { return IntPtr.Zero; }
+    }
 
-	internal static bool GlueGunWielded
-	{
-		get;
-		private set;
-	}
+    private static bool SameLimb(Dam_EnemyDamageLimb left, Dam_EnemyDamageLimb right)
+    {
+        if (ReferenceEquals(left, right)) return true;
+        IntPtr leftPointer = SafeLimbPointer(left), rightPointer = SafeLimbPointer(right);
+        return leftPointer != IntPtr.Zero && leftPointer == rightPointer;
+    }
 
-	internal static Vector3 HitPoint
-	{
-		get;
-		private set;
-	}
+    // World-space top of the focused enemy. The head limb gives the reliable skull position;
+    // renderer bounds are only trusted inside a small window around it.
+    internal static bool TryGetHeadWorld(EnemyAgent enemy, float headOffsetMetres, out Vector3 world)
+    {
+        world = Vector3.zero;
+        if (enemy == null) return false;
+        try
+        {
+            Vector3 anchor;
+            bool anchoredOnHead;
+            Dam_EnemyDamageLimb head = enemy.m_headLimb;
+            if (head != null)
+            {
+                Transform headTransform = head.transform;
+                if (headTransform == null) return false;
+                anchor = headTransform.position;
+                anchoredOnHead = true;
+            }
+            else
+            {
+                Transform model = enemy.MainModelTransform;
+                anchor = model != null ? model.position : enemy.transform.position;
+                anchoredOnHead = false;
+            }
+            if (!KillPolicy.IsFinite(anchor.x) || !KillPolicy.IsFinite(anchor.y) || !KillPolicy.IsFinite(anchor.z)) return false;
 
-	internal static bool HitIsWeakspot
-	{
-		get;
-		private set;
-	}
+            float baseY = anchoredOnHead ? anchor.y : anchor.y + FallbackBodyHeightMetres;
+            float top = TopY(enemy);
+            float lower = anchor.y - MaxBoundsBelowAnchorMetres;
+            float upper = anchor.y + (anchoredOnHead ? MaxBoundsAboveHeadMetres : MaxBoundsAboveRootMetres);
+            if (top >= lower && top <= upper && top > baseY) baseY = top;
 
-	internal static float BackDot
-	{
-		get;
-		private set;
-	} = 0f / 0f;
+            world = new Vector3(anchor.x, baseY + HeadPaddingMetres + headOffsetMetres, anchor.z);
+            return KillPolicy.IsFinite(world.x) && KillPolicy.IsFinite(world.y) && KillPolicy.IsFinite(world.z);
+        }
+        catch { return false; }
+    }
 
+    // One measurement per target per refresh window (review F4). The cache itself is pure and bounded;
+    // this method only supplies the measurement, and a thrown/empty measurement is cached as 0 exactly
+    // like before, so an enemy without an enabled renderer never re-enumerates every frame.
+    private static float TopY(EnemyAgent enemy)
+    {
+        int id;
+        try { id = enemy.GetInstanceID(); } catch { id = int.MinValue; }
+        return Bounds.Top(id, Time.unscaledTime, () => MeasureTopY(enemy));
+    }
 
-	internal static void Reset()
-	{
-		Target = null;
-		GlueGunWielded = false;
-		Distance = 0f;
-		Reason = "idle";
-		HitsSeen = 0;
-		EnemyHits = 0;
-		Bounds.Clear();
-		HitPoint = Vector3.zero;
-		HitIsWeakspot = false;
-		BackDot = 0f / 0f;
-	}
-
-	internal static void Update(float configuredMaxDistance)
-	{
-		GlueGunWielded = false;
-		Target = null;
-		Distance = 0f;
-		HitsSeen = 0;
-		EnemyHits = 0;
-		HitPoint = Vector3.zero;
-		HitIsWeakspot = false;
-		BackDot = 0f / 0f;
-		float maxDistance = BarPolicy.MaxDistance(configuredMaxDistance);
-		try
-		{
-			if (!PlayerManager.HasLocalPlayerAgent())
-			{
-				Reason = "no-local-player";
-				return;
-			}
-			PlayerAgent localPlayerAgent = PlayerManager.GetLocalPlayerAgent();
-			if (localPlayerAgent == null)
-			{
-				Reason = "no-local-player";
-				return;
-			}
-			if (!localPlayerAgent.IsLocallyOwned)
-			{
-				Reason = "not-local-owner";
-				return;
-			}
-			try
-			{
-				GlueGunWielded = GlueGunWield.IsHeld(localPlayerAgent.FPItemHolder);
-			}
-			catch
-			{
-				GlueGunWielded = false;
-			}
-			FPSCamera fPSCamera = localPlayerAgent.FPSCamera;
-			if ((object)(object)fPSCamera == null)
-			{
-				Reason = "no-camera";
-				return;
-			}
-			Vector3 origin = fPSCamera.CameraRayPos;
-			if (!KillPolicy.IsFinite(origin.x) || !KillPolicy.IsFinite(origin.y) || !KillPolicy.IsFinite(origin.z) || origin.sqrMagnitude < 0.0001f)
-			{
-				origin = fPSCamera.Position;
-			}
-			Vector3 vector = fPSCamera.CameraRayDir;
-			if (!KillPolicy.IsFinite(vector.x) || !KillPolicy.IsFinite(vector.y) || !KillPolicy.IsFinite(vector.z) || vector.sqrMagnitude < 0.0001f)
-			{
-				vector = fPSCamera.Forward;
-			}
-			if (!KillPolicy.IsFinite(origin.x) || !KillPolicy.IsFinite(origin.y) || !KillPolicy.IsFinite(origin.z) || !KillPolicy.IsFinite(vector.x) || !KillPolicy.IsFinite(vector.y) || !KillPolicy.IsFinite(vector.z) || vector.sqrMagnitude < 0.0001f)
-			{
-				Reason = "no-ray";
-				return;
-			}
-			vector = vector.normalized;
-			_playerRoot = localPlayerAgent.transform;
-			Scan(mask: MaskValue = LayerManager.MASK_BULLETWEAPON_RAY | LayerManager.MASK_CAMERA_RAY | LayerManager.MASK_ENEMY | LayerManager.MASK_ENEMY_DAMAGABLE, origin: origin, direction: vector, maxDistance: maxDistance, nearest: out var nearest, nearestDistance: out var nearestDistance, blocker: out var blocker, nearestPoint: out var nearestPoint, nearestCollider: out var nearestCollider);
-			if (nearest == null)
-			{
-				float num2 = blocker;
-				int mask2 = LayerBit(LayerManager.LAYER_ENEMY) | LayerBit(LayerManager.LAYER_ENEMY_DAMAGABLE) | LayerManager.MASK_ENEMY | LayerManager.MASK_ENEMY_DAMAGABLE;
-				Scan(origin, vector, maxDistance, mask2, out var nearest2, out var nearestDistance2, out var _, out var nearestPoint2, out var nearestCollider2);
-				if (nearest2 != null && nearestDistance2 <= num2 + 0.05f)
-				{
-					nearest = nearest2;
-					nearestDistance = nearestDistance2;
-					blocker = num2;
-					nearestPoint = nearestPoint2;
-					nearestCollider = nearestCollider2;
-				}
-			}
-			if (nearest == null)
-			{
-				Reason = "no-enemy";
-				return;
-			}
-			if (nearestDistance > blocker + 0.05f)
-			{
-				Reason = "blocked";
-				return;
-			}
-			if (!IsAlive(nearest))
-			{
-				Reason = "target-not-alive";
-				return;
-			}
-			Target = nearest;
-			CaptureHitGeometry(nearest, nearestPoint, nearestCollider);
-			Distance = nearestDistance;
-			Reason = "enemy";
-		}
-		catch (System.Exception ex)
-		{
-			Target = null;
-			Distance = 0f;
-			Reason = "error:" + ((MemberInfo)ex.GetType()).Name;
-		}
-	}
-
-	private static void Scan(Vector3 origin, Vector3 direction, float maxDistance, int mask, out EnemyAgent nearest, out float nearestDistance, out float blocker, out Vector3 nearestPoint, out Collider nearestCollider)
-	{
-		nearest = null;
-		nearestDistance = 1f / 0f;
-		blocker = 1f / 0f;
-		nearestPoint = Vector3.zero;
-		nearestCollider = null;
-		int num = Physics.RaycastNonAlloc(origin, direction, Hits, maxDistance, mask, QueryTriggerInteraction.Ignore);
-		if (num <= 0)
-		{
-			return;
-		}
-		HitsSeen += num;
-		int num2 = ((num < Hits.Length) ? num : Hits.Length);
-		for (int i = 0; i < num2; i++)
-		{
-			RaycastHit raycastHit = Hits[i];
-			Collider collider = raycastHit.collider;
-			if (collider == null)
-			{
-				continue;
-			}
-			Transform transform = collider.transform;
-			if (transform == null || IsSelf(transform))
-			{
-				continue;
-			}
-			float distance = raycastHit.distance;
-			if (!KillPolicy.IsFinite(distance) || distance < 0f)
-			{
-				continue;
-			}
-			if (distance < blocker)
-			{
-				blocker = distance;
-			}
-			EnemyAgent enemyAgent = Resolve(collider);
-			if (!(enemyAgent == null))
-			{
-				EnemyHits++;
-				if (distance < nearestDistance)
-				{
-					nearestDistance = distance;
-					nearest = enemyAgent;
-					nearestPoint = raycastHit.point;
-					nearestCollider = collider;
-				}
-			}
-		}
-	}
-
-	private static void CaptureHitGeometry(EnemyAgent enemy, Vector3 point, Collider collider)
-	{
-		HitPoint = point;
-		bool hitIsWeakspot = false;
-		try
-		{
-			Dam_EnemyDamageLimb dam_EnemyDamageLimb = ((collider != null) ? collider.GetComponentInParent<Dam_EnemyDamageLimb>() : null);
-			if (dam_EnemyDamageLimb != null)
-			{
-				hitIsWeakspot = dam_EnemyDamageLimb.m_type == eLimbDamageType.Weakspot;
-			}
-		}
-		catch (System.Exception)
-		{
-			hitIsWeakspot = false;
-		}
-		HitIsWeakspot = hitIsWeakspot;
-		float backDot = 0f / 0f;
-		try
-		{
-			if (enemy != null)
-			{
-				Vector3 forward = enemy.transform.forward;
-				Vector3 vector = point - enemy.transform.position;
-				backDot = FocusOutlinePolicy.DirectionDot(forward.x, forward.y, forward.z, vector.x, vector.y, vector.z);
-			}
-		}
-		catch (System.Exception)
-		{
-			backDot = 0f / 0f;
-		}
-		BackDot = backDot;
-	}
-
-	private static EnemyAgent Resolve(Collider collider)
-	{
-		try
-		{
-			return collider.GetComponentInParent<EnemyAgent>();
-		}
-		catch
-		{
-			return null;
-		}
-	}
-
-	private static bool IsAlive(EnemyAgent enemy)
-	{
-		try
-		{
-			if (enemy == null || !enemy.m_alive)
-			{
-				return false;
-			}
-			Dam_EnemyDamageBase damage = enemy.Damage;
-			if (damage == null)
-			{
-				return false;
-			}
-			float health = damage.Health;
-			return KillPolicy.IsFinite(health) && health > 0f;
-		}
-		catch
-		{
-			return false;
-		}
-	}
-
-	private static bool IsSelf(Transform candidate)
-	{
-		if (_playerRoot == null || candidate == null)
-		{
-			return false;
-		}
-		try
-		{
-			return candidate == _playerRoot || candidate.IsChildOf(_playerRoot);
-		}
-		catch
-		{
-			return false;
-		}
-	}
-
-	private static int LayerBit(int layer)
-	{
-		if (layer < 0 || layer >= 32)
-		{
-			return 0;
-		}
-		return 1 << layer;
-	}
-
-	internal static string RawNameOf(EnemyAgent enemy)
-	{
-		if (enemy == null)
-		{
-			return "Unknown";
-		}
-		try
-		{
-			EnemyDataBlock block = GameDataBlockBase<EnemyDataBlock>.GetBlock(enemy.EnemyDataID);
-			if (block != null && !string.IsNullOrWhiteSpace(block.name))
-			{
-				return block.name;
-			}
-		}
-		catch
-		{
-		}
-		try
-		{
-			return enemy.name;
-		}
-		catch
-		{
-			return "Unknown";
-		}
-	}
-
-	internal static string ResolveWeakspotParts(EnemyAgent enemy, string language)
-	{
-		if (enemy == null)
-		{
-			return string.Empty;
-		}
-		try
-		{
-			List<WeakspotPartMultiplier> val = new List<WeakspotPartMultiplier>();
-			HashSet<System.IntPtr> val2 = new HashSet<System.IntPtr>();
-			Dam_EnemyDamageLimb dam_EnemyDamageLimb = null;
-			try
-			{
-				dam_EnemyDamageLimb = enemy.m_headLimb;
-			}
-			catch
-			{
-			}
-			Dam_EnemyDamageBase damage = enemy.Damage;
-			Il2CppReferenceArray<Dam_EnemyDamageLimb> il2CppReferenceArray = ((damage != null) ? damage.DamageLimbs : null);
-			bool flag = false;
-			if (il2CppReferenceArray != null)
-			{
-				for (int i = 0; i < il2CppReferenceArray.Length; i++)
-				{
-					Dam_EnemyDamageLimb dam_EnemyDamageLimb2 = il2CppReferenceArray[i];
-					if (dam_EnemyDamageLimb2 == null || dam_EnemyDamageLimb2.m_type != eLimbDamageType.Weakspot)
-					{
-						continue;
-					}
-					System.IntPtr intPtr = SafeLimbPointer(dam_EnemyDamageLimb2);
-					if (intPtr != System.IntPtr.Zero && !val2.Add(intPtr))
-					{
-						continue;
-					}
-					int num;
-					if (dam_EnemyDamageLimb != null)
-					{
-						num = (SameLimb(dam_EnemyDamageLimb2, dam_EnemyDamageLimb) ? 1 : 0);
-						if (num != 0)
-						{
-							flag = true;
-						}
-					}
-					else
-					{
-						num = 0;
-					}
-					string part = ((num != 0) ? BarPolicy.HeadPartLabel(language) : BarPolicy.PartLabel(WeakspotDebugName(dam_EnemyDamageLimb2), language));
-					float multiplier;
-					try
-					{
-						multiplier = dam_EnemyDamageLimb2.m_weakspotDamageMulti;
-					}
-					catch
-					{
-						multiplier = 0f / 0f;
-					}
-					val.Add(new WeakspotPartMultiplier(part, multiplier));
-				}
-			}
-			if (!flag && dam_EnemyDamageLimb != null && dam_EnemyDamageLimb.m_type == eLimbDamageType.Weakspot)
-			{
-				float multiplier2;
-				try
-				{
-					multiplier2 = dam_EnemyDamageLimb.m_weakspotDamageMulti;
-				}
-				catch
-				{
-					multiplier2 = 0f / 0f;
-				}
-				val.Add(new WeakspotPartMultiplier(BarPolicy.HeadPartLabel(language), multiplier2));
-			}
-			return BarPolicy.WeakspotTags((System.Collections.Generic.IEnumerable<WeakspotPartMultiplier>)val, language);
-		}
-		catch
-		{
-			return string.Empty;
-		}
-	}
-
-	internal static float GlueToleranceOf(EnemyAgent enemy)
-	{
-		if (enemy == null)
-		{
-			return 0f / 0f;
-		}
-		try
-		{
-			return enemy.EnemyBalancingData?.GlueTolerance ?? (0f / 0f);
-		}
-		catch
-		{
-			return 0f / 0f;
-		}
-	}
-
-	private static string WeakspotDebugName(Dam_EnemyDamageLimb limb)
-	{
-		try
-		{
-			if (!string.IsNullOrWhiteSpace(limb.DebugName))
-			{
-				return limb.DebugName;
-			}
-		}
-		catch
-		{
-		}
-		try
-		{
-			return (limb.transform != null) ? limb.transform.name : string.Empty;
-		}
-		catch
-		{
-			return string.Empty;
-		}
-	}
-
-	private static System.IntPtr SafeLimbPointer(Dam_EnemyDamageLimb limb)
-	{
-		try
-		{
-			return (limb != null) ? limb.Pointer : System.IntPtr.Zero;
-		}
-		catch
-		{
-			return System.IntPtr.Zero;
-		}
-	}
-
-	private static bool SameLimb(Dam_EnemyDamageLimb left, Dam_EnemyDamageLimb right)
-	{
-		if ((object)left == right)
-		{
-			return true;
-		}
-		System.IntPtr intPtr = SafeLimbPointer(left);
-		System.IntPtr intPtr2 = SafeLimbPointer(right);
-		if (intPtr != System.IntPtr.Zero)
-		{
-			return intPtr == intPtr2;
-		}
-		return false;
-	}
-
-	internal static bool TryGetHeadWorld(EnemyAgent enemy, float headOffsetMetres, out Vector3 world)
-	{
-		world = Vector3.zero;
-		if (enemy == null)
-		{
-			return false;
-		}
-		try
-		{
-			Dam_EnemyDamageLimb headLimb = enemy.m_headLimb;
-			Vector3 vector;
-			bool flag;
-			if (headLimb != null)
-			{
-				Transform transform = headLimb.transform;
-				if (transform == null)
-				{
-					return false;
-				}
-				vector = transform.position;
-				flag = true;
-			}
-			else
-			{
-				Transform mainModelTransform = enemy.MainModelTransform;
-				vector = ((mainModelTransform != null) ? mainModelTransform.position : enemy.transform.position);
-				flag = false;
-			}
-			if (!KillPolicy.IsFinite(vector.x) || !KillPolicy.IsFinite(vector.y) || !KillPolicy.IsFinite(vector.z))
-			{
-				return false;
-			}
-			float num = (flag ? vector.y : (vector.y + 1.6f));
-			float num2 = TopY(enemy);
-			float num3 = vector.y - 0.6f;
-			float num4 = vector.y + (flag ? 2f : 6f);
-			if (num2 >= num3 && num2 <= num4 && num2 > num)
-			{
-				num = num2;
-			}
-			world = new Vector3(vector.x, num + 0.12f + headOffsetMetres, vector.z);
-			return KillPolicy.IsFinite(world.x) && KillPolicy.IsFinite(world.y) && KillPolicy.IsFinite(world.z);
-		}
-		catch
-		{
-			return false;
-		}
-	}
-
-	private static float TopY(EnemyAgent enemy)
-	{
-		int id;
-		try
-		{
-			id = enemy.GetInstanceID();
-		}
-		catch
-		{
-			id = -2147483648;
-		}
-		return Bounds.Top(id, Time.unscaledTime, () => MeasureTopY(enemy));
-	}
-
-	private static float MeasureTopY(EnemyAgent enemy)
-	{
-		float num = -1f / 0f;
-		try
-		{
-			Il2CppArrayBase<Renderer> componentsInChildren = enemy.GetComponentsInChildren<Renderer>(includeInactive: true);
-			if (componentsInChildren != null)
-			{
-				for (int i = 0; i < componentsInChildren.Length; i++)
-				{
-					Renderer renderer = componentsInChildren[i];
-					if (!(renderer == null) && renderer.enabled)
-					{
-						float y = renderer.bounds.max.y;
-						if (KillPolicy.IsFinite(y) && y > num)
-						{
-							num = y;
-						}
-					}
-				}
-			}
-		}
-		catch
-		{
-			num = -1f / 0f;
-		}
-		if (num != -1f / 0f)
-		{
-			return num;
-		}
-		return 0f;
-	}
+    private static float MeasureTopY(EnemyAgent enemy)
+    {
+        float top = float.NegativeInfinity;
+        try
+        {
+            Il2CppArrayBase<Renderer> renderers = enemy.GetComponentsInChildren<Renderer>(true);
+            if (renderers != null)
+            {
+                for (int i = 0; i < renderers.Length; i++)
+                {
+                    Renderer renderer = renderers[i];
+                    if (renderer == null || !renderer.enabled) continue;
+                    float maxY = renderer.bounds.max.y;
+                    if (KillPolicy.IsFinite(maxY) && maxY > top) top = maxY;
+                }
+            }
+        }
+        catch { top = float.NegativeInfinity; }
+        // An enemy with no enabled renderer (spawning, pooled, or invisible) caches the miss as 0.
+        return top == float.NegativeInfinity ? 0f : top;
+    }
 }

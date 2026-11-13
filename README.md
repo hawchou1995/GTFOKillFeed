@@ -1,17 +1,6 @@
-# KillFeed
+# KillFeed 1.2.19
 
 独立的 GTFO 客户端反馈插件，需要 BepInEx，并以前置依赖 DamageSync 实现联机敌人血条。
-
-## 1.2.17 新功能
-
-- **卡片与头顶图标独立**：`Card/Enabled` 默认 `true`，`KillIcon/HeadEnabled` 默认 `false`；两者可同时开启、同时显示，也可只开其一。`General/Enabled` 与 F7 仍是总门控。
-- **头顶图标不透明度**：`KillIcon/Opacity` 默认 `0.5`，范围 0–1，NaN/Infinity 回退 0.5；只与生命周期淡出相乘一次，同时作用于图标和飞行徽章。
-- **可见 hitbox 避让**：头顶图标只对与「图标 + 飞行徽章」当前屏幕投影重叠的活体敌人 hitbox 上移；候选覆盖同屏不同深度，非敌人 collider 不占缓冲。候选集不完整、注册表/缓冲饱和或投影无法证明时安全隐藏图标，不会强行开启已关闭的卡片。
-- **命中/击杀音效独立**：`HitSound/Enabled` 父开关默认 `true`；`HitSound/HitEnabled`、`KillEnabled` 默认 `false`，`HitVolume`、`KillVolume` 默认 `0.4`；旧 `HitSound/Volume`（默认 `0.8`）与父开关原值保留，继续作为主音量/父开关，热改旧音量两路一起变。`HitSound/MuteVanillaIndicator` 默认 `false`，且不需要开启它才能听自定义音效。
-- **尸体与标记拆分**：`Corpse/Launch`、`Dismember`、`Chunks`、`BurstVisual`、`BurstSound` 与 `HitMarker/HitEnabled`、`KillEnabled` 均有独立开关；父开关关闭时子项无效，回收/寿命路径不受子开关影响。
-- **旧配置热重载**：只改旧 `KillIcon/Display` 的升级用户仍按 Head/Card 旧语义在 `ConfigFile.Reload` 后切换；显式改新呈现键后两个新键独立并跨重启保持。旧配置的 `Display`、`HitSound/Enabled`、`HitSound/Volume` 值不被改写。
-
-完整键表、默认值与父子关系见 `docs/FEATURE-SWITCHES.md`，视觉细节见 `docs/KILLVIEW.md`。
 
 ## 截图
 
@@ -35,7 +24,7 @@
 
 ## 伤害数字
 
-护甲 `[6.75]`、普通 `24.35`、弱点 `81.2!`：同一套带描边的字形家族，但尺寸、标记与克制的语义色各不相同。短促弹出、向外弧线与淡出，灵感来自 Brotato。默认存活 0.72 秒；同时最多 64 个数字。可观测时使用最终伤害结算；否则调用游戏自身的抗性与肢体/背击修正，做法参考 DamageAnalyzer。数值保留小数并包含过量伤害，而不是把所有命中取整。开启全局 `DamageNumbers/Enabled` 后，`ShowShotgunDamageNumbers` 可独立开关霰弹枪弹字。`MergeShotgunPellets` 默认开启，只在匹配的开火帧与装备类别范围内合并同一敌人的弹丸；跨帧延迟回调仍遵守霰弹枪隐藏开关，但按弹逐条显示，避免误并入后一枪。混合命中类型使用中性样式。
+护甲 `[6.75]`、普通 `24.35`、弱点 `81.2!`：同一套带描边的字形家族，但尺寸、标记与克制的语义色各不相同。短促弹出、向外弧线与淡出，灵感来自 Brotato。默认存活 0.72 秒；同时最多 64 个数字。可观测时使用最终伤害结算；否则调用游戏自身的抗性与肢体/背击修正，做法参考 DamageAnalyzer。数值保留小数并包含过量伤害，而不是把所有命中取整。开启全局 `DamageNumbers/Enabled` 后，`ShowShotgunDamageNumbers` 可独立开关霰弹枪弹字。`MergeShotgunPellets` 默认开启：一次开火（volley）内同一敌人的弹丸合并成一个数字，弹丸在后续帧陆续结算仍算同一枪（窗口上限 0.5 秒，距最后一颗 0.05 秒静默即提前结算），两次开火绝不合并；关闭时每颗弹丸各自立即显示，关闭 `ShowShotgunDamageNumbers` 则这些弹丸完全不显示。混合命中类型使用中性样式。
 
 弱点数字的颜色现在由 `DamageNumbers/WeakspotColor` 控制，默认克制的深红 `#E5484D`（可写 `#RRGGBB` 或 `#RRGGBBAA`，非法值回落琥珀，保存后热重载）。普通数字仍是中性的 `Ink` 白，护甲数字仍是固定的灰蓝 `[x]`，击杀卡片标题仍是琥珀色——三者都不受影响；6 位色时数字的淡出 alpha 与之前完全一致。
 
@@ -50,16 +39,16 @@
   - 击杀：血量档位 MINOR / ELITE / BOSS 各一套；
   - 飞行击杀与装甲飞行击杀：在各自档位上再叠加不同的飞行／护甲音色，**档位仍然可辨**。
 - 血量档位按敌人整体 `HealthMax` 划分：默认 `<120` MINOR、`120–<1000` ELITE、`>=1000` BOSS。BOSS 线就是**既有**的 `KillIcon/HeavyHealthThreshold`（同一把尺子决定重型图标与 BOSS 音效），1.2.16 只新增 `KillIcon/MinorHealthThreshold`，两者均可热重载。旧配置把重型线设在 `<120` 时保持该值：低于它是 MINOR、达到它就是 BOSS，ELITE 区间为空。飞行身份来自游戏数据 `EnemyBehaviorDataBlock.IsFlyer`，装甲身份来自敌人自身的护甲部位，都与最后一次打中的部位无关。
-- 素材事实：这套音源只对 `light`/`medium` 击杀音（和 BF1 命中音）提供风格变体；`heavy`、`flying`、`hit_heavy` 只有一份来源，因此这些类别统一使用 `bf5` 文件，不会出现"名字不同、字节相同"的假变体。弱点／护甲命中音与飞行／装甲飞行击杀音是**确定性派生**（截取或固定比例混合），素材就是随包的 `src/KillFeed.Audio.*.wav`，对应说明见 `CHANGELOG.md` 的 1.2.16 音效条目。
-- **原版命中提示层默认不静音**（`HitSound/MuteVanillaIndicator` 默认 `false`）：把这一项改成 `true` 才会跳过 `BULLETHITENEMYINDICATOR`、`BULLETHITENEMYLOCALINDICATOR`、`BULLETHITENEMYWEAKSPOTLOCALINDICATOR` 三个"命中确认叮声"。子弹真正打在敌人身上的冲击音（`BULLETHITENEMYLOCAL`/`SYNC`、`BULLETHITENEMYWEAKSPOTLOCAL`/`SYNC`）、敌人受伤/死亡语音，以及其它所有音效**完全不受影响**。
+- 素材事实：这套音源只对 `light`/`medium` 击杀音（和 BF1 命中音）提供风格变体；`heavy`、`flying`、`hit_heavy` 只有一份来源，因此这些类别统一使用 `bf5` 文件，不会出现"名字不同、字节相同"的假变体。弱点／护甲命中音与飞行／装甲飞行击杀音是**确定性派生**（截取或固定比例混合），来源与哈希写在 `reports/feature-1.2.16-analysis.md`。
+- **默认静音原版命中提示层**（`HitSound/MuteVanillaIndicator = false`，即默认**不**静音）：把这一项改成 `true` 才会跳过 `BULLETHITENEMYINDICATOR`、`BULLETHITENEMYLOCALINDICATOR`、`BULLETHITENEMYWEAKSPOTLOCALINDICATOR` 三个"命中确认叮声"。子弹真正打在敌人身上的冲击音（`BULLETHITENEMYLOCAL`/`SYNC`、`BULLETHITENEMYWEAKSPOTLOCAL`/`SYNC`）、敌人受伤/死亡语音，以及其它所有音效**完全不受影响**。
 - 这个静音开关与 `HitSound/Enabled`、`Volume`、`Style` 互相独立：关掉自建音效**不会**让原版提示音回来；静音开关也不会让新音效变哑。
 - `HitSound/Volume` 默认 `0.8`（0–1，越界夹取，非有限值回落 0.8）；`HitSound/MinIntervalSeconds` 默认 `0.05`（0.02–3.0），命中与击杀各自独立节流，机枪连射不会糊成一片。
 
 ## BFV 击杀图标与命中标记
 
-- **新装默认只画击杀卡片，头顶图标需显式开启**：本地确认击杀时，`Card/Enabled` 默认 `true` 画出卡片；头顶 BFV 击杀图标由 `KillIcon/HeadEnabled` 控制，默认 `false`，开启后在该敌人**头顶**显示，档位与击杀音效共用同一个 `KillPresentation.Tier`：MINOR = `light`（白骷髅）、ELITE = `medium`（橙骷髅）、BOSS = `heavy`（红齿轮）。BOSS 线仍是 `KillIcon/HeavyHealthThreshold` 一条权威线（默认 `1000`，夹取 1–1000000000，`NaN` 回落 1000，保存即热重载），判定读敌人自己的 `HealthMax`，不写死任何敌人 ID。图标几何取自 BFV 素材的 64×64 矩形块表，构建期渲染成 128×128，硬边像素原样保留。两个开关互相独立，可以同时开启、同时显示；卡片的尺寸/位置/生命/背景透明度/距离与血量显示一律保持原样，`General/Enabled` 与 F7 对两种呈现一视同仁。旧键 `KillIcon/Display` 只对仍处于 Legacy 迁移状态的配置继续生效：`.cfg` 里已有 `Display`，而 `Card/Enabled`/`KillIcon/HeadEnabled` 缺失或仍与它的映射一致（`ViewMode=Legacy:*`）。`Card`/`Cards`（大小写不敏感）= 只开卡片；`Head` 或任何无法识别的值 = 开头顶图标、关卡片；改它保存即热重载、不用重启。任一新键偏离该映射后即进入 `Explicit`（`KillIcon/ViewMode=Explicit`），`Display` 被忽略，以两个新键为准；新安装没有旧 `Display` 值，直接用两个新键的默认值。
-- **命中线条三档 + 击杀线条，替代原版标记（1.2.17）**：护甲命中 = BFV `vehiclehit`（青色四角括号），普通命中 = `hitmark`（白 X），弱点命中 = `killhitmark`（橙 X，比普通大 18%），**击杀** = 同一 `killhitmark` 几何加粗后的独立红线条（默认 `#B92828`，比弱点大 35%，停留更久）。击杀线条与头顶击杀图标是两种独立效果：致命一击先在**实际受击部位**显示击杀线条，头顶图标另行显示（需开启 `KillIcon/HeadEnabled`，新装默认关闭）。线条跟随游戏自己报告的世界命中点（`CrosshairGuiLayer.ShowHitIndicator` / `ShowDeathIndicator`）并随相机投影，因此**不再画在准星正中**；相机后方或屏幕外的命中不绘制。尺寸基准 `HitMarker/Size`（默认 `64` px @1080p，16–200 夹取）。`HitMarker/Enabled`（默认 `true`）逐事件替换原版；把它改成 `false` 回到原版标记。资源缺失、投影失败、友伤命中、无法与本地伤害事件对应的零伤害命中、补丁缺失时该事件仍显示原版，绝不会两个标记叠在一起或完全没有命中反馈。护甲判定来自原始伤害方法**运行前**建立的本地命中上下文（同一点 0.25 m 内、同一/上一帧、只用一次）：确认为本地装甲部位的零伤害命中会显示装甲线条并只抑制那一次原版，未确认的 `noDamage` 事件不会被猜成护甲。四档同时用**形状、尺寸、颜色**区分，颜色键 `HitMarker/ColorNormal`、`ColorWeakspot`、`ColorArmor`、`ColorKill`（默认 `#FFFFFF`、`#FF8C00`、`#49ADC9`、`#B92828`）全部热重载。
-- **新装的命中/击杀音效默认不出声，但父开关是开的**：`HitSound/Enabled` 是父开关、默认 `true`；`HitSound/HitEnabled`、`KillEnabled` 默认 `false`，所以新装默认听不到 BF 的 cue。想要就各自打开对应通道（`HitEnabled` 管普通/弱点/护甲命中，`KillEnabled` 管击杀），两路可以只开一路。原版提示层的静音开关 `HitSound/MuteVanillaIndicator` 默认 `false`，即新装保留原版叮声；它是独立开关，**不需要**打开才能听自定义音效，打开也不会让自定义音效变哑。父开关、两个通道开关、静音项四者互不改写。
+- **击杀反馈默认画在敌人头顶**：本地确认击杀时在该敌人**头顶**显示 BFV 击杀图标，档位与击杀音效共用同一个 `KillPresentation.Tier`：MINOR = `light`（白骷髅）、ELITE = `medium`（橙骷髅）、BOSS = `heavy`（红齿轮）。BOSS 线仍是 `KillIcon/HeavyHealthThreshold` 一条权威线（默认 `1000`，夹取 1–1000000000，`NaN` 回落 1000，保存即热重载），判定读敌人自己的 `HealthMax`，不写死任何敌人 ID。图标几何取自 BFV 素材的 64×64 矩形块表，构建期渲染成 128×128，硬边像素原样保留。想回到旧版卡片式击杀提示，把 `KillIcon/Display` 改成 `Card` 即可（大小写不敏感，保存即生效、不用重启），卡片的尺寸/位置/生命/背景透明度/距离与血量显示一律保持原样，`General/Enabled` 与 F7 对两种呈现一视同仁。
+- **命中线条三档 + 击杀线条，替代原版标记（1.2.17）**：护甲命中 = BFV `vehiclehit`（青色四角括号），普通命中 = `hitmark`（白 X），弱点命中 = `killhitmark`（橙 X，比普通大 18%），**击杀** = 同一 `killhitmark` 几何加粗后的独立红线条（默认 `#B92828`，比弱点大 35%，停留更久）。击杀线条与头顶击杀图标是两种独立效果：致命一击先在**实际受击部位**显示击杀线条，头顶图标另行显示（本版默认就是它）。线条跟随游戏自己报告的世界命中点（`CrosshairGuiLayer.ShowHitIndicator` / `ShowDeathIndicator`）并随相机投影，因此**不再画在准星正中**；相机后方或屏幕外的命中不绘制。尺寸基准 `HitMarker/Size`（默认 `64` px @1080p，16–200 夹取）。`HitMarker/Enabled`（默认 `true`）逐事件替换原版；把它改成 `false` 回到原版标记。资源缺失、投影失败、友伤命中、无法与本地伤害事件对应的零伤害命中、补丁缺失时该事件仍显示原版，绝不会两个标记叠在一起或完全没有命中反馈。护甲判定来自原始伤害方法**运行前**建立的本地命中上下文（同一点 0.25 m 内、同一/上一帧、只用一次）：确认为本地装甲部位的零伤害命中会显示装甲线条并只抑制那一次原版，未确认的 `noDamage` 事件不会被猜成护甲。四档同时用**形状、尺寸、颜色**区分，颜色键 `HitMarker/ColorNormal`、`ColorWeakspot`、`ColorArmor`、`ColorKill`（默认 `#FFFFFF`、`#FF8C00`、`#49ADC9`、`#B92828`）全部热重载。
+- **命中/击杀音效默认关闭**：`HitSound/Enabled` 现在默认 `false`，想要 BF 那三套 cue 的人自己打开；原版提示层的静音开关 `HitSound/MuteVanillaIndicator` 默认仍为 `true`，`MuteVanillaIndicator` 现在也默认 `false`：默认安装保留原版叮声，想要 BF 手感就把两者一起打开；两个开关互相独立。
 - **头顶位置（1.2.16 起在击杀瞬间冻结）**：世界锚点 = 敌人真实头部 limb（与准星焦点血条同一个 helper，含 0.12 m 头部 padding）再向上 `KillIcon/HeadGapMetres`（默认 `0.30` m）；血条开着且为 Head 模式时额外叠加血条自己的 `EnemyBar/HeadOffsetMetres`，所以图标始终在血条上方留有清晰间隙；血条为 Screen 模式或关闭时仍在怪物头顶，不贴屏幕边缘。锚点在**本地致死 credit 的那一刻只取一次**（对象仍是刚死的那只；头部不可读时改用致死伤害事件已携带的世界坐标并抬同样的 clearance），之后**不再逐帧重读活体/尸体头部**，只随相机重投影——所以尸体倒地不会把图标拖着一起下滑（对齐源 BFV 模组「不做世界跟随」）。对象池指针只作身份审计，不参与寻位，复用对象也不会把图标拽到新敌人身上；无任何可用锚点时不绘制并回退卡片，绝不跳到屏幕中心。相机后方/屏幕外、无相机时不绘制。`KillIcon/HeadLifetime`（默认 `2.2` s）控制淡入淡出，`HeadMaxIcons`（默认 `6`，上限 12）限制同屏数量（满时移除最旧），切关/重生即清空。
 - **同档区分普通飞行与装甲飞行（形状优先）**：普通飞行在图标下方加翼形 chevron（`KillIcon/FlyerColor`，默认 `#8FD3E8`），装甲飞行加空心装甲板（`KillIcon/ArmorFlyerColor`，默认 `#E6AB57`），地面击杀没有徽记——先靠形状、颜色只作冗余编码。`IsFlyer` 读游戏自己的 `EnemyBehaviorDataBlock.IsFlyer`，装甲判定读敌人自身 limb 布局里是否存在 `eLimbDamageType.Armor`（与打中哪条 limb 无关）。卡片模式下图标角上也带同一个徽记，所以音效、图标、卡片三者永远同档同飞行。
 ## 伤害数字的棱彩与档位
@@ -82,15 +71,15 @@
 
 `Corpse/ExplosionFx` 默认 **false** ——**相对更早版本这是默认行为变更**：更早版本恒定播放尸体爆裂特效与爆炸音效，现在默认关闭，想要保留旧观感请在 `HawChow.GTFOKillFeed.cfg` 里手动写 `ExplosionFx = true`。该键只关闭原版 `FXC_FlyerDeath` 爆裂特效与爆炸音效（含热关闭时清空待播的合并音效），击飞、断肢、碎块、爆裂后的隐藏与租约回收、死亡统计、InLevel 与去重队列都不受影响。已有 `.cfg` 没有这个键时按默认 false 生效。
 
-`原生快速消融（默认开启）`（相对更早版本的默认行为变更是 `Corpse/ExplosionFx` 默认关闭；消融是新增能力，不会关闭或改写原有击飞/断肢行为与其它开关）：爆裂后 0.75 秒物理窗口结束时，KillFeed 会针对**一个**可见主 Renderer 从游戏**自己的** `Decay.pool` 借一具实例（`Initialize(renderer, null)` + `Play(0.5f)`）播放约 0.5 秒的分解消融，然后照原顺序执行瞬时 `Hide()` 与刚体回收——隐藏/恢复、击飞、断肢、碎块与去重清理的顺序一帧不差；Decay 只翻自己的 `forceRenderingOff`，不碰 `enabled`、不碰源材质。以下任一情况都会**静默回落**为原来的瞬时隐藏，不建池、不改第三方行为：`Corpse/FadeEffect=false`、池不存在或 `freeInstanceCount=0`、prefab 原型不是 `stopAction=Deactivate`+`autoCleanup=true`、`Harmony.GetPatchInfo` 在 `Decay.Play` 上发现任何 Prefix/Postfix/Transpiler/Finalizer（DBO 1.5.0 正是这种情况）、游戏暂停、无可用 Renderer、已移出场景、全局并发已满（硬上限 2）。归还只有一条证明路径：`Play` 后 `m_playing==true` ⇒ 由游戏 `Update` 归还，本插件绝不 `Return`；`Play` 抛异常或被吞且 `m_playing==false` ⇒ 先 `Cleanup()`（只销毁克隆渲染器）再 `pool.Return()` 恰好一次。全代码库没有任何 `Object.Destroy(Decay/GameObject)`（那会 `Recycle` 掉全局共享音源并让之后所有 decay 静音），也不 detour `ES_Dead`、不写 `MaterialPropertyBlock`、不新增 Harmony 补丁。原生这条路径只播 `MEDIUM_CORPSE_DECOMP` 分解音，不会触发被 `ExplosionFx` 关掉的 `ENEMYEXPLODE`。作者已在 Survival profile 实机确认关闭爆裂后尸体仍照常击飞/断肢并以原生消融消失；**仍未实机观察**：与 DBO 并存时是否真的走“检测到 patch → 跳过”分支、长时间多波次战斗后原生消融池是否无泄漏。
+`原生快速消融（默认开启）`（相对更早版本的默认行为变更是 `Corpse/ExplosionFx` 默认关闭；消融是新增能力，不会关闭或改写原有击飞/断肢行为与其它开关）：爆裂后 0.75 秒物理窗口结束时，KillFeed **先驱动尸体自身携带的原生 `Decay` 组件**：只调 `Play(0.5f)`，**绝不**调 `Initialize`（1.2.19 的根因正是在一具未武装的实例上调 `Initialize` 触发原生 `NullReferenceException`）。就绪判据是该组件自己的 `m_targetRenderer` 仍指向有效 renderer（不成立就记 `fade=fallback;reason=native-not-initialized` 并转池化路径），归属判据是 `Play` 同步写入的 `m_playing`；组件属于尸体本身，所以这条路径不借、不跟踪、不归还任何池对象。之后照原顺序执行瞬时 `Hide()` 与刚体回收——隐藏/恢复、击飞、断肢、碎块与去重清理的顺序一帧不差；Decay 只翻自己的 `forceRenderingOff`，不碰 `enabled`、不碰源材质。池化回退自 1.2.19 起是 **fail-closed**：只有尸体自身没有可用组件（`no-decay-component` / `unsafe-decay-component` / `decay-already-playing`）或原生 `Play` 未生效时，才会从游戏**自己的** `Decay.pool` 借一具实例，而借来的实例**只被探测、原样归还**——既不 `Initialize` 也不 `Play`（池里的 Decay 还带着上一具尸体的 `m_targetRenderer`，离线没有任何办法证明它指向这一具，而绑定它的唯一手段就是那条被禁用的 `Initialize`），因此池化路径的可观察结果固定是 `fade=skipped;reason=pool-unverifiable;note=pooled-instance-unverifiable`，随后仍是瞬时隐藏。以下任一情况都会**静默回落**为原来的瞬时隐藏，不建池、不改第三方行为：`Corpse/FadeEffect=false`、池不存在或 `freeInstanceCount=0`、prefab 原型不是 `stopAction=Deactivate`+`autoCleanup=true`、`Harmony.GetPatchInfo` 在 `Decay.Play` 上发现任何 Prefix/Postfix/Transpiler/Finalizer（DBO 1.5.0 正是这种情况）、游戏暂停、无可用 Renderer、已移出场景、全局并发已满（硬上限 2）。池化路径的归还只有一条路径：探测判定不可验证（含探测抛异常）⇒ `Cleanup()`（原生只销毁克隆渲染器）再 `pool.Return()` **恰好一次**，实例从未被初始化或播放；代码里 `Play` 之后的判据（`m_playing==true` ⇒ 由游戏 `Update` 归还，本插件绝不 `Return`；`false` ⇒ 同样 `Cleanup()`+`Return()` 恰好一次）仍然保留，但 1.2.19 起不可达。全代码库没有任何 `Object.Destroy(Decay/GameObject)`（那会 `Recycle` 掉全局共享音源并让之后所有 decay 静音），也不 detour `ES_Dead`、不写 `MaterialPropertyBlock`、不新增 Harmony 补丁。原生这条路径只播 `MEDIUM_CORPSE_DECOMP` 分解音，不会触发被 `ExplosionFx` 关掉的 `ENEMYEXPLODE`。作者在 Survival profile 实机确认的是 1.2.16 的观感（关掉爆裂后尸体仍照常击飞/断肢并以原生消融消失）；**1.2.19 这两处改动本身（池化路径禁 `Initialize`/`Play`、原生路径改认 `m_targetRenderer`）尚未在游戏内复验**，与 DBO 并存时是否真的走“检测到 patch → 跳过”分支、长时间多波次战斗后原生池是否无泄漏也都仍未观察。
 
-消融路径的守恒细节（①–④ 由源码审查与静态断言确认，⑤ 说明当前门禁的覆盖边界）：①`EndAt` 的“选 renderer + 借实例 + `Play`”已整体放进 `CorpseFadePrep.Attempt` 异常屏障（`PrimaryRenderer` 逐候选 try/catch），原生对象失效或抛异常时 `Hide()`/刚体回收/队列清理照旧执行；②占额只看原生 `m_playing`，不再按时间超时——长暂停或一帧跨秒时仍在播放的实例继续占位（第三次借用被拒），游戏自行归还或对象销毁才释放，状态读不到则 fail-closed 保留名额；③原生反汇编确认 `Decay.Play(float)`（`0x162fec0`）在 `0x162ff47` **同步**写入 `m_playing`，故 `Play` 返回后立即读取是权威判据；④明确披露：**每次渐变都可能播放原生 `MEDIUM_CORPSE_DECOMP` 分解音，`Corpse/ExplosionFx` 不影响它**，要完全安静需把 `Corpse/FadeEffect` 也设 false；⑤这些消融不变量在本次公开快照里由源码审查确认；仓库内的编译后 IL 守卫 `tests/KillFeed.IlGuard` 只覆盖呈现/图标/卡片/预览与「不写游戏状态」，并未包含针对消融路径的 IL 门禁，因此不把它算作已跑证据。
+消融路径的守恒细节（发布前已由静态断言与编译后 IL 守卫覆盖）：①`EndAt` 的“选 renderer + 驱动尸体自身 `Decay` 的 `Play` + 池实例的借用/探测/原样归还”已整体放进 `CorpseFadePrep.Attempt` 异常屏障（renderer 选取与 `TryBegin` 各包一层 try/catch；借来的池实例既不 `Initialize` 也不 `Play`），原生对象失效或抛异常时 `Hide()`/刚体回收/队列清理照旧执行；②占额只看原生 `m_playing`，不再按时间超时——长暂停或一帧跨秒时仍在播放的实例继续占位（第三次借用被拒），游戏自行归还或对象销毁才释放，状态读不到则 fail-closed 保留名额；③原生反汇编确认 `Decay.Play(float)`（`0x162fec0`）在 `0x162ff47` **同步**写入 `m_playing`，故 `Play` 返回后立即读取是权威判据；④明确披露：**每次渐变都可能播放原生 `MEDIUM_CORPSE_DECOMP` 分解音，`Corpse/ExplosionFx` 不影响它**，要完全安静需把 `Corpse/FadeEffect` 也设 false；⑤编译后 IL 守卫 `scripts/Test-CorpseFadeIl.ps1`（无 `Object.Destroy`、无建池、无 `MaterialPropertyBlock`、无 `Time.timeScale` 写入、无指向 `Decay`/`ES_Dead` 的 `[HarmonyPatch]`，且 `TryBegin` 只能经异常屏障被调用）。
 
 ### 消融失败原因
 
-消融只借用游戏自己的 `Decay.pool`，不建池、不销毁对象；失败原因逐项独立成词，并在日志里按 `[CORPSE] fade=…` 输出。每个原因每关最多记 3 条、整关最多 24 条信息 + 4 条警告，离关重进时整份预算与计数都会归零。
+消融优先驱动尸体自身的原生 `Decay` 组件，回退时才借用游戏自己的 `Decay.pool`；两条路径都不建池、不销毁对象。失败原因逐项独立成词，并在日志里按 `[CORPSE] fade=…` 输出。每个原因每关最多记 3 条、整关最多 24 条信息 + 4 条警告，离关重进时整份预算与计数都会归零。
 
-跳过（`fade=skipped`，连池都没碰）：
+跳过（`fade=skipped`）：
 
 | reason | 含义 |
 |---|---|
@@ -105,6 +94,7 @@
 | `no-renderer` | 这具尸体没有任何可见 renderer |
 | `off-scene` | 已按距离移出场景并回收物理 |
 | `concurrency-cap` | 本插件并发消融已达硬上限 2 |
+| `pool-unverifiable` | 借来的池实例无法证明属于这具尸体（`Ready()` 在 1.2.19 恒为 false），已原样归还：不初始化、不播放 |
 
 尝试失败（`fade=failed`，附带 `scheduleId`、`polls`、`failures`、`manualReleases`、`active`）：
 
@@ -114,7 +104,7 @@
 | `borrow-error` | `Decay.GetInstance()` 或池读取抛异常 |
 | `instance-busy` / `instance-tracked` / `instance-gone` | 拿到的实例仍在播放、已被本插件跟踪、或已随关卡销毁：三种都不属于我们，**不释放** |
 | `probe-unknown` | 借到手后读不到原生状态，fail-closed 保留名额，不猜不还 |
-| `initialize-failed` / `initialize-threw` | `Decay.Initialize(renderer, null)` 返回后目标 renderer 未绑定（原生只 LogError 不抛），或原生实现抛异常；两种情况都 `Cleanup()` + `pool.Return()` **恰好一次** |
+| ~~`initialize-failed` / `initialize-threw`~~ | **1.2.19 已作废**：代码里已无 `Decay.Initialize`，这两个 reason 只会出现在 1.2.18 及更早的日志里（那是在未武装的借来实例上调原生 `Initialize` 触发的 `NullReferenceException`）。1.2.19 起借来的实例一律只探测、不初始化，固定记 `fade=skipped;reason=pool-unverifiable` |
 | `play-not-observed` / `play-threw` | `Play(0.5f)` 调用后 `m_playing` 仍为 false（被吞）或抛出；同样 `Cleanup()` + `pool.Return()` 恰好一次 |
 | `unexpected` | 未预期异常，只影响这一次消融 |
 
@@ -126,7 +116,7 @@
 
 倒地队友头顶会出现一枚深红单字标记，默认「菜」，可在配置里四选一：「菜」（Cai）、「鶸」（Ruo）、「死」（Si）、「殺」（Sha）。它只读游戏状态：队伍来自 `PlayerManager.PlayerAgentsInLevel`（人类与机器人同表），倒地判据是 `PlayerLocomotion.PLOC_State.Downed`，头部锚点优先用原版头顶名字牌 `PlayerSyncModelData.m_nameNavMarkerAlign`，退化到颈部骨与眼位；本机玩家由 `PlayerManager.IsLocalAgent` 排除。标记跟随 3D 世界位置投影，按**本地玩家到该队友的真实距离**缩放：1080p 下 8 m 为 30 px，最近封顶 41 px，最远收紧到 26 px（这条下限由「鶸」的字形封闭空隙实测得出，避免远距离糊成一团），并整体随分辨率缩放、再受屏幕高度 5% 上限约束。视角后方（`screen.z <= 0.1`）、出屏、超过 `MaxDistanceMetres`、目标销毁或状态读不出的目标一律跳过，不夹到屏幕边缘。复活、离队、槽位换人（`SNet_Player.Lookup` 变化）、空名单、离关重进都会收敛或清空缓存；不逐帧扫场景、不做每帧 raycast、不新增 Harmony 补丁，也不发送任何网络包。
 
-图标就是插件目录里的四张透明 PNG：`Assets/icons/teammate-downed-{cai,ruo,si,sha}.png`（128×128，由 `TeammateMark/Icon` 四选一）。可以直接覆盖，或用 `TeammateMark/CustomIconPath` 指向你自己的图——**双轨路径**：以盘符/根开头的值（盘符开头的绝对路径）按本机绝对路径使用；其他任何值按相对路径处理，相对插件的 `Assets/icons` 目录解析（填 `teammate-downed-sha.png` 就是随包殺图，填 `mymark.png` 即 `Assets/icons/mymark.png`）。UNC/网络路径仍会被拒绝，因为断链的共享目录会卡住探测。文件内容或路径变化会被自动发现并热重载，探测与读取在单个后台任务里完成，不占用 `Update`/`OnGUI`；遇到锁定、半写、坏 PNG 或错误路径时保留上一张有效贴图（从未成功过则回退到内置字形文字绘制），并按失败次数指数退避重试（0.5 s 起、5 s 封顶，每个失败周期只记一条日志），不会出现白块也不会抛异常。四选图标均由作者实机确认（菜/鶸实机截图见下）。
+图标就是插件目录里的四张透明 PNG：`Assets/icons/teammate-downed-{cai,ruo,si,sha}.png`（128×128，由 `TeammateMark/Icon` 四选一）。可以直接覆盖，或用 `TeammateMark/CustomIconPath` 指向你自己的图——**双轨路径**：以盘符/根开头的值（`C:\...`）按本机绝对路径使用；其他任何值按相对路径处理，相对插件的 `Assets/icons` 目录解析（填 `teammate-downed-sha.png` 就是随包殺图，填 `mymark.png` 即 `Assets/icons/mymark.png`）。UNC/网络路径仍会被拒绝，因为断链的共享目录会卡住探测。文件内容或路径变化会被自动发现并热重载，探测与读取在单个后台任务里完成，不占用 `Update`/`OnGUI`；遇到锁定、半写、坏 PNG 或错误路径时保留上一张有效贴图（从未成功过则回退到内置字形文字绘制），并按失败次数指数退避重试（0.5 s 起、5 s 封顶，每个失败周期只记一条日志），不会出现白块也不会抛异常。四选图标均由作者实机确认（菜/鶸实机截图见下）。
 
 ![倒地队友头顶的「鶸」标记（实机）](https://raw.githubusercontent.com/hawchou1995/HawChow-Mod-Assets/main/images/KillFeed-teammate-mark-ruo-1.2.12.png)
 
@@ -143,7 +133,7 @@
 
 结沫团数标签固定显示简体中文（`[结沫*N]` / `[结沫*免疫]`），不随 `General/Language` 设置切换。
 
-在 `HawChow.GTFOKillFeed.cfg` 的 `EnemyBar` 节中配置：`Enabled`、`MaxDistance`（**60 m**）、`Anchor`（`Head` 跟随目标，`Screen` 固定在屏幕）、`HeadOffsetMetres`、`ScreenAnchorFraction`、`VerticalOffset`、`MinScreenFraction`、`MaxScreenFraction`、`BarWidth`、`BarHeight`、`Opacity`、`ShowName`、`ShowWeakspotPart`、`ShowNumbers`、`NumberSize`、`YellowThresholdPercent`、`RedThresholdPercent`、`NameColor`、`WeakspotColor`、`HealthTextColor`、`FillColor`、`FillYellowColor`、`FillRedColor`、`GhostColor`、`TrackColor`、`BorderColor`、`LogFocus`。数值会被钳制，红色阈值上限为黄色阈值。颜色接受 `#RRGGBB` 或 `#RRGGBBAA`；非法字符串回落到默认值，`Opacity` 与配置的 alpha 相乘。**F7** 会把血条、击杀卡片与头顶击杀图标一起隐藏。
+在 `HawChow.GTFOKillFeed.cfg` 的 `EnemyBar` 节中配置：`Enabled`、`MaxDistance`（**60 m**）、`Anchor`（`Head` 跟随目标，`Screen` 固定在屏幕）、`HeadOffsetMetres`、`ScreenAnchorFraction`、`VerticalOffset`、`MinScreenFraction`、`MaxScreenFraction`、`BarWidth`、`BarHeight`、`Opacity`、`ShowName`、`ShowWeakspotPart`、`ShowNumbers`、`NumberSize`、`YellowThresholdPercent`、`RedThresholdPercent`、`NameColor`、`WeakspotColor`、`HealthTextColor`、`FillColor`、`FillYellowColor`、`FillRedColor`、`GhostColor`、`TrackColor`、`BorderColor`、`LogFocus`。数值会被钳制，红色阈值上限为黄色阈值。颜色接受 `#RRGGBB` 或 `#RRGGBBAA`；非法字符串回落到默认值，`Opacity` 与配置的 alpha 相乘。**F7** 会把血条与击杀卡片一起隐藏。
 
 关闭 `ShowName` 时，名称、弱点标签与结沫团数标签会一起隐藏。`ShowWeakspotPart` 只控制非胶枪模式的弱点标签；手持胶枪时，若名称显示开启且结沫数据有效，结沫标签不受该设置影响。`ShowNumbers` 独立控制血量数字。
 
@@ -187,7 +177,7 @@ KillFeed 没有任何与联机同步相关的配置项。早期**未发布的本
 
 ## 操作
 
-- **F7**：切换 HUD 显隐（击杀卡片、头顶击杀图标、焦点血条与倒地标记共用）。
+- **F7**：切换 HUD 显隐（击杀卡片、焦点血条与倒地标记共用）。
 - **F9**：预览两张卡片与全部三类命中数字，不触发尸体特效。
 - 尸体与伤害数字的控制项仍在 `HawChow.GTFOKillFeed.cfg`；两个按键都能在 `Input` 节改成其他键或设为 `None` 关闭。
 
@@ -200,14 +190,14 @@ KillFeed 没有任何与联机同步相关的配置项。早期**未发布的本
 - `Layout`：`MaxCards`（`3`，1–6）、`IconSize`（`46` px，26–76）、`CardLifetime`（`2.6` 秒）、`FadeSeconds`（`0.45` 秒）、`HorizontalOffset`（`0`）、`VerticalOffset`（`0`）、`MaxDistance`（`999`，超过时显示为 `<数值>m+`）、`BackgroundOpacity`（`0`，0–0.9）。
 - `DamageNumbers`：`Enabled`（`true`）、`ApproachEffect`（`false`：轨迹开关，关闭=初版上飘淡出、不放大不汇聚；`true`=朝视点飞行）、`ShowShotgunDamageNumbers`（`true`，仅在总开关开启时生效）、`MergeShotgunPellets`（`true`）、`FontSize`（`27`，16–42）、`FontWeight`（`1`，0–2：同上）、`Lifetime`（`0.72` 秒，0.35–1.2）、`WeakspotColor`（`#E5484D`，`#RRGGBB` 或 `#RRGGBBAA`；只影响弱点数字，普通/护甲数字与击杀卡片琥珀色不变）、`Opacity`（`1.0`，0–1：`1` 与旧版完全一致，`0.5` 半透明，`0` 完全不绘制；乘数与淡出相乘一次并同时作用于正文与 8 道描边，越界夹取、非有限值回落 `1.0`）。
 - `DamageFx`：`PrismaticEnabled`（`true`：棱彩外观与棱彩轨迹/放大的总开关，关闭后按普通数字渲染）、`PrismaticThreshold`（`60`，0–1000000，`0` 关闭；与上一项任一关闭即关闭）、`TiersEnabled`（`true`：关闭后同时去掉档位主体色与档位描边，含棱彩开启时那一圈内圈档位色；累计值照常记录；棱彩开启时该数字的箔外观不受本项影响）、`WhiteThreshold`/`SilverThreshold`/`GoldThreshold`/`DiamondThreshold`（默认 `3000`/`5000`/`10000`/`20000`；1–1000000000 夹取，0 或以下回落默认，反序自动抬正）。
-- `HitSound`：`Enabled`（父开关，`true`）、`HitEnabled`/`KillEnabled`（通道开关，新装 `false`；已有旧键的配置升级后默认 `true` 并跟随父开关）、`Volume`（旧主音量，`0.8`，0–1；通道实际输出 = 通道音量 × 本值 ÷ 0.8）、`HitVolume`/`KillVolume`（通道音量，新装 `0.4`；旧配置升级默认 `0.8` 以保持原音量）、`Style`（`BF5`，可写 `BF1`/`BF6`）、`MuteVanillaIndicator`（`false`，只静音三个 INDICATOR 事件；不需要开启才能听自定义音效）、`MinIntervalSeconds`（`0.05`，0.02–3.0）。
+- `HitSound`：`Enabled`（`true`）、`Style`（`BF5`，可写 `BF1`/`BF6`）、`Volume`（`0.8`，0–1）、`MuteVanillaIndicator`（`true`，只静音三个 INDICATOR 事件）、`MinIntervalSeconds`（`0.05`，0.02–3.0）。
 - `Corpse`：`Enabled`（`true`）、`ExplosionFx`（`false`，只控制爆裂视觉与爆炸音效）、`FadeEffect`（`true`，约 0.5 秒原生分解消融；不可用/被 patch/暂停时自动回落为瞬时隐藏）、`ExplosionDelay`（`0.1` 秒，0.1–1.5）、`TravelScale`（`1.0`，0.5–1.5）、`MinLaunchDistance`（`12` m，**0.5–30**）、`MaxLaunchDistance`（`18` m，0.5–30，不小于最小值；两个值自 1.2.16 起直接反解成初速，配置多少就飞多远，绝对上限 40 m）。
 - `TeammateMark`：`Enabled`（`true`）、`Icon`（`Cai`=菜（默认），`Ruo`=鶸，`Si`=死，`Sha`=殺）、`CustomIconPath`（`""`，双轨：根路径=绝对路径，其余=相对 `Assets/icons`；空 = 用随包 PNG）、`RefDistanceMetres`（`8`，1–30）、`MinPixels`（`26`，13–96）、`MaxPixels`（`42`，13–96）、`MaxDistanceMetres`（`60`，1–500）、`HeadClearanceMetres`（`0.05`，0–2）、`HideDuringEMP`（`false`）、`LogMarks`（`false`）。
 - `Input`：`ToggleKey`（`F7`）、`PreviewKey`（`F9`）。
-- 所有配置项的描述文本（`.cfg` 里的注释）都是中文，写明取值范围、默认值、是否热重载与关闭后的效果；**节名与键名一字未改**，旧 `.cfg` 的既有值全部保留，1.2.14 的两个外观键（`DamageNumbers/ApproachEffect`、`DamageFx/PrismaticEnabled`）与 1.2.17 新增的呈现/音效键都只在各自缺失时才取默认值，BepInEx 的 `# Default value:` 机制不变。
+- 所有配置项的描述文本（`.cfg` 里的注释）都是中文，写明取值范围、默认值、是否热重载与关闭后的效果；**节名与键名一字未改**，旧 `.cfg` 的既有值全部保留，两个新键（`DamageNumbers/ApproachEffect`、`DamageFx/PrismaticEnabled`）只在该键缺失时才取默认值（`false` / `true`），BepInEx 的 `# Default value:` 机制不变。
 
 - 升级不会覆盖已有配置值。所有 `.cfg` 项（含 `DamageNumbers/Opacity`、`Corpse/ExplosionFx`、`Corpse/FadeEffect`、`DamageNumbers/WeakspotColor` 与 10 个 `TeammateMark` 键）保存后无需重启即可热重载；敌人名称 JSON 独立热重载。持久显示项（颜色、尺寸、位置、可见性与图标）下一帧生效；已经在飞的伤害数字会立刻按新的 `Opacity` 重绘，尸体爆裂排程这类瞬时事件在下一个事件生效；关掉 `Corpse/FadeEffect` 不会打断已借出的原生消融实例，从下一具尸体起生效。
-- 版本 `1.2.17` 的程序集版本为 `1.2.17.0`；升级请通过 Thunderstore/r2modman 安装新版本，不要覆盖旧包。已有 `.cfg` 里没有 `DamageNumbers/Opacity` 时按默认 `1.0` 生效（画面与更新前完全一致）；没有 `Corpse/ExplosionFx` 时按默认 `false` 生效，想要爆裂视觉/音效需手动改为 `true`；1.2.16 起 `Corpse/MinLaunchDistance`/`MaxLaunchDistance` 按你写的值生效（0.5–30 m，旧的 12 m 地板已删），如果你之前把最小值设得很小是因为它不生效，现在它会真的生效，想要旧手感请改成 3.5–5 m 左右。没有 1.2.14 的 12 个新键时按上面列出的默认生效（音效父开关开、BF5、主音量 0.8、不静音原版提示层、棱彩阈值 60、档位开、专注描边开）；1.2.17 的音效通道键 `HitEnabled`/`KillEnabled`/`HitVolume`/`KillVolume` 在全新安装下取「两通道关、通道音量 0.4」，已有 1.2.16 旧键的配置则取「通道开、通道音量 0.8」以保持升级前后音量逐值相同。热重载前后插件不主动回写文件，**已有键值不会被覆盖**；BepInEx 把旧 `.cfg` 里缺失的新键绑定后保存时，可能追加该键。
+- 版本 `1.2.16` 的程序集版本为 `1.2.16.0`；升级请通过 Thunderstore/r2modman 安装新版本，不要覆盖旧包。已有 `.cfg` 里没有 `DamageNumbers/Opacity` 时按默认 `1.0` 生效（画面与更新前完全一致）；没有 `Corpse/ExplosionFx` 时按默认 `false` 生效，想要爆裂视觉/音效需手动改为 `true`；1.2.16 起 `Corpse/MinLaunchDistance`/`MaxLaunchDistance` 按你写的值生效（0.5–30 m，旧的 12 m 地板已删），如果你之前把最小值设得很小是因为它不生效，现在它会真的生效，想要旧手感请改成 3.5–5 m 左右。没有 1.2.14 的 12 个新键时按上面列出的默认生效（音效开、BF5、音量 0.8、静音原版提示层、棱彩阈值 60、档位开、专注描边开）。热重载前后插件不主动回写文件，**已有键值不会被覆盖**；BepInEx 把旧 `.cfg` 里缺失的新键绑定后保存时，可能追加该键。
 
 ## 安装与依赖
 
@@ -221,11 +211,10 @@ KillFeed 没有任何与联机同步相关的配置项。早期**未发布的本
 
 ## 测试与验证边界
 
-- 发布物隐私（1.2.17）：`Release` 构建不生成 PDB/CodeView，`tools/privacy_scan.py` 对 ZIP 每个条目（文本与二进制）、源码树与全部 git 历史扫描本机绝对路径；规则与唯一豁免见 `docs/PRIVACY.md`。
 - 1.1.4 版本于 2026-10-18 做过实机测试：Test profile 日志记录了九次使用自定义音频路径完成的尸爆，以及一次合并爆裂及其待播合并提示，作者确认可以听到播放。嵌入式音频与冷却边界修复见更新日志。
 - 实机确认（作者 Survival profile）：倒地队友头顶的「菜」标记、默认深红的弱点伤害数字，以及关闭 `Corpse/ExplosionFx` 后尸体仍照常击飞/断肢并以原生快速消融消失等视觉表现，均由作者在真实会话中确认。
 - 历史实机视觉（1.2.8 起）：作者在 Test profile 中实机确认手持胶枪显示橙色 `[结沫*2]`、普通武器显示红色 `[头3×]`，即上方两张截图。
-- 发布前离线验证（1.2.17，2026-11-12，SDK 6.0.428，锁在仓库根的 `global.json`；不是游戏内实测）：在干净工作副本里按 `docs/REPRODUCE.md` 重建——主工程 `src/GTFOKillFeed.csproj`、三套测试工程与 ILGuard 全部构建成功（0 error）；`KillFeed.Policy.Tests`（视觉/呈现策略）**424** 项、`KillFeed.Tests`（控制/联合，含真实 `BepInEx.ConfigFile` 的新装、旧 Display + 旧 Enabled/Volume 升级、旧键热重载与新键独立）**405** 项、`KillFeed.IlGuard`（Mono.Cecil 读编译产物）**0 failures**；文档门禁 `python tools/verify_docs.py` 全过，其负向对照 `python tools/verify_docs.py --negative` 全部按预期变红。行为负向对照也实跑过：把 `HitMarkerPolicy.AcceptsSubmission` 的 `None` 检查去掉、只留通道检查、或改成恒 `true`，`KillFeed.Tests` 分别报 1/1/3 条失败；把 `HitMarkerHud.Submit` 改回不调用该谓词的旧写法，`KillFeed.IlGuard` 报 3 条失败。用只装了 7.0.x SDK 的 dotnet host 在仓库内会直接报 `A compatible .NET SDK was not found`，不会静默换用别的 SDK 生成不同 IL。**以上均为离线验证，本次没有做游戏内实测。**
+- 发布前离线验证（1.2.16 版本号下实跑，2026-11-11，含第二轮/第三轮审查修复）：`scripts/Verify.ps1` 通过——**1135** 条 kill-feed policy 断言（含 C1-C7 的击飞/夹取/碰撞/日志断言、I1/I7 的卡片-图标表驱动用例、1.2.16 的宽限重试断言（`RagdollLookupGrace=0.30`、重试/放弃互斥、60 fps 下 8 次尝试、单次 90 ms 卡顿不再关闭窗口），以及第三轮审查的 R1-R9 断言：单一冲量入口 `CanApplyLaunch`、729 条租约序列的冲量上限、租约身份「指针+generation」、EndAt 收口与 `CorpsePostBurstHold > RagdollLookupGrace`、`LaunchState` 自相矛盾、`ladder=` 值语义、`no-decay-component` 回执可达）、`CONFIG_SMOKE` 89 项、`GLUE_WIELD_WIRING`、`CORPSE_FADE_IL`（`LAUNCH=…singleGate(CanApplyLaunch:pointer&generation,max2)+closureInCloseLaunch(RemoveQueued|EndAt)…`，含阶梯顺序、`attempts`/`firstLookupAge` 日志串、单一冲量入口、EndAt 收口与「只有 `CorpseFade` 可驱动 `Decay`」的会话级断言）、`DAMAGE_NUMBER_OPACITY_IL`、`HIT_SOUND_PATCH_NAMES`/`HIT_SOUND_MUTE_IL`/`KILL_PRESENTATION_IL`、`HIT_MARKER_IL`、`KILL_ICON_IL`（`ANCHOR=frozen-at-credit` + 类型级「除 Push 外不得写 X/Y/Z」）全部 PASS，`Build-HitKillAudio.py --verify`（`AUDIO_VERIFY=PASS`）与 `Build-BfvIcons.py --check`（`BFV_ICONS=PASS;COUNT=7`）亦通过；程序集版本 `1.2.16.0`。新断言做过变异验证：把重试窗口改回 burst 绑定、把布娃娃阶梯顺序对调、把放弃判定换回 `ShouldWaitForRagdoll`、把冲量入口改回「无预算检查」、把租约身份改回仅比指针、让 `Restore` 保留 `Enemy`/`EnemyRoot`/`ModelRoot`、把 EndAt 收口去掉、让 `IsReportableNative` 重新依赖组件，以及把夹取半径下限、连续碰撞判定、卡片寿命延长与卡片/图标判定表分别改回旧行为，对应断言均按预期变红。
 - **仍未验证（请勿当成已通过）**：`launch=applied` 相对 `schedule=accepted` 的**真实比例**（本次修复把重试窗口与 burst 解耦并加了取物阶梯，但只有实机日志能证明协程迟生成的布娃娃真的被抓到——关注 `ragdoll=late@attempts=N` 与 `launch=applied` 的出现率）；头顶击杀图标冻结后的观感与飞行徽记效果；击飞预算反解后的实际落手/落点曲线是否与配置相符。另外仍未验证：`TeammateMark/HideDuringEMP=true` 的 EMP 隐藏模式未在真实 EMP 场景验证；与 DeadBodyOptimization 并存时是否真的走回退分支未实机观察；长时间多波次战斗后原生消融池的借出/归还未观测；远端玩家倒地状态同步未专项验证（多人主机与客户端下标记的插值延迟）；免疫敌人 `[结沫*免疫]` 的实机显示、帧时与 GC 性能。原版命中提示音的第三个事件名 `BULLETHITENEMYINDICATOR` 只存在于 `AK.BUSSES`，无法按事件 ID 解析（既有已知项）。静态侧已证明的是守恒条件、恰好一次归还与调用顺序，不能替代上述实机确认。
 
 - 第二轮实机缺陷修复（同一 1.2.16）：投掷改为「布娃娃租约三态 + 首帧 0.02 s 施加 + 替换布娃娃时窗口内二次施加 + 任何移除前必收口」；消融改为驱动尸体自身 `Decay` 组件（不借池、不校验 target renderer、只接受 `StopAction.None` + `autoCleanup=true`）。**仍未验证**：实机是否真的出现 `launch=applied;…;application=#N;ladderHit=…`（否则至少是 `launch=unavailable;reason=…`），以及原生 Decay 路径是否被 `unsafe-decay-component` 挡下——该值来自敌人物件序列化数据，离线不可读。门禁侧 `ES_PATCHES=0` 是负向硬断言（绝不 patch 任何 `ES_*`）。

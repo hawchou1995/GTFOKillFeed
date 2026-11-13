@@ -1,11 +1,58 @@
 # 公开复现流程
 
-本仓库有两个快照：
+本仓库有三个快照：
 
-- tag `baseline-1.2.16`：从 1.2.16 原包恢复的**基线源码**，带有 `docs/verify/il-differences.txt`
-  和已修复的 `tools/Inspect/Inspect.csproj`。基线门禁只应在这个 tag/commit 上运行。
-- tag `v1.2.17`：最终发布源码。不要在最终源码树直接运行 `tools/verify_baseline.py`；
-  它期望的是 1.2.16 重建产物与 1.2.16 原 DLL 的对照。
+- tag `baseline-1.2.16`：从 1.2.16 原包恢复的**基线源码**（反编译基线，一个文件一个类型），
+  带有 `docs/verify/il-differences.txt` 和已修复的 `tools/Inspect/Inspect.csproj`。基线门禁只应
+  在这个 tag/commit 上运行。
+- tag `v1.2.17`：1.2.17 发布源码（反编译基线 + 1.2.17 新增文件）。不要在这个源码树直接运行
+  `tools/verify_baseline.py`；它期望的是 1.2.16 重建产物与 1.2.16 原 DLL 的对照。
+- tag `v1.2.19`：当前发布源码 = **作者源码树**（`src/HawChow.GTFOKillFeed/` 47 个 `.cs`，
+  一个文件可声明多个类型；反编译基线的 82 个「一个文件一个类型」单元已并入这些文件，不再存在），
+  构建产物与商店包内 DLL **逐字节相同**。参见下面的 §0b；本文件 §1–§5 的预期数字属于
+  `baseline-1.2.16` / `v1.2.17` 两个 tag。
+
+## 0b. 1.2.19：构建即发布产物（tag `v1.2.19`）
+
+```bash
+export DOTNET=/path/to/dotnet            # 6.0.428（见 §0），或改装 6.0.428
+export GTFO_DIR=/path/to/Survival        # 只读，含 BepInEx/core 与 BepInEx/interop
+"$DOTNET" build src/GTFOKillFeed.csproj -c Release \
+  -p:GTFO_DIR="$GTFO_DIR" --configfile nuget.config
+```
+
+预期：构建成功、0 个错误（`src/Properties/AssemblyInfo.cs` 已随 1.2.19 移除——版本属性唯一来源是
+`src/HawChow.GTFOKillFeed/PluginInfo.cs`），产物 `src/bin/Release/GTFOKillFeed.dll`：
+
+| 项 | 值 |
+|---|---|
+| 字节数 | `1294848` |
+| SHA256 | `76608B71D072C728C4C21ABFA90BDEB3459F4D71A6C274F31C4A53174995E999` |
+| FileVersion / ProductVersion | `1.2.19.0` / `1.2.19.0` |
+
+该 SHA256 与 Thunderstore 包 `KillFeed-1.2.19` 内 `BepInEx/plugins/GTFOKillFeed/GTFOKillFeed.dll`
+逐字节相同：源码树 → 构建产物 → 商店包三者同源，中间没有手工替换。
+
+SDK 版本门禁：`global.json` 仍锁 `6.0.428` + `rollForward=latestPatch`，只装了更高特性带 SDK 的
+机器会直接报 `Requested SDK version: 6.0.428`。这挡的是「用别的编译器生成不同 IL」，属有意设计；
+要么装 6.0.428，要么在一个 `global.json` 允许 `latestMajor` 的目录里执行（SDK 解析从**当前目录**
+向上查找），仓库内的 `global.json` 不要为此改动。
+
+测试（同一份源码树）：
+
+```bash
+"$DOTNET" build tests/KillFeed.Policy.Tests/KillFeed.Policy.Tests.csproj -c Release -p:GTFO_DIR="$GTFO_DIR"
+"$DOTNET" build tests/KillFeed.Tests/KillFeed.Tests.csproj -c Release -p:GTFO_DIR="$GTFO_DIR"
+"$DOTNET" build tests/KillFeed.IlGuard/KillFeed.IlGuard.csproj -c Release -p:GTFO_DIR="$GTFO_DIR"
+"$DOTNET" tests/KillFeed.Policy.Tests/bin/Release/net6.0/KillFeed.Policy.Tests.dll   # RESULT pass=424 fail=0
+"$DOTNET" tests/KillFeed.Tests/bin/Release/net6.0/KillFeed.Tests.dll                 # SUMMARY pass=354;fail=0
+```
+
+说明：`tests/KillFeed.Tests/SourceGateTests.cs` 在 1.2.19 只保留「每个 `Config.Bind` 键必须在
+`docs/FEATURE-SWITCHES.md` 里有反引号词条」这一条与文件布局无关的门禁（当前 103 键全覆盖）；其余
+旧门禁匹配的是反编译文本（`base.Config.Bind(`、`num3 >= item.EndAt`、`GibActivatePatch.cs`），
+对作者源码树只会给出假答案，已随合并删除。1.2.19 的源码级门禁在作者树的 `scripts/Verify.ps1`，
+不在本仓库内。
 
 原始 1.2.16 ZIP 不含在本仓库，请使用自己合法持有的原包。下面所有临时输出都放在仓库外的
 `$SCRATCH`，不要把 `orig/`、`bin/`、`obj/` 或生成的证据提交回来。
