@@ -1,8 +1,8 @@
 {
   "name": "KillFeed",
-  "version_number": "1.2.19",
+  "version_number": "1.2.21",
   "website_url": "https://qingju.me",
-  "description": "为 GTFO 提供纯本地的击杀卡片、伤害数字、尸体特效，以及显示弱点与结沫团数的准星焦点血条；联机敌人血条依赖前置 DamageSync。1.2.19：霰弹枪一次开火改为按弹丸窗口合并，弹丸在后续帧陆续结算也只出一个数字。",
+  "description": "GTFO 本地击杀卡片、伤害数字与尸体反馈，联机焦点血条依赖 DamageSync。1.2.21：修复手动 CellUI 画布下击杀计数无法显示；细分 HUD 诊断；消融前验证目标网格有效性。",
   "dependencies": [
     "BepInEx-BepInExPack_GTFO-3.2.3",
     "randomuserhi-DamageSync-0.0.7"

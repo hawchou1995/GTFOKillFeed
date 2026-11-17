@@ -51,6 +51,8 @@ internal static class KillTracker
     private static readonly KillLedger Ledger = new();
     private static readonly KillCardQueue Cards = new();
     private static readonly BurstHistory Bursts = new();
+    private static readonly RepeatedLogBudget KillLogBudget = new();
+    internal static readonly KillCounterTotals Counters = new();
     [ThreadStatic] private static DamageScope _active;
     [ThreadStatic] private static DamageOriginScope _originScope;
     // 1.2.19 fix: 12 `[FEEDBACK]` lines per LEVEL (not per process). The Survival log spent the whole process budget
@@ -62,6 +64,10 @@ internal static class KillTracker
 
     internal static void Reset(string reason = "unspecified")
     {
+        if (KillLogBudget.Suppressed > 0)
+            Plugin.Instance?.Log.LogInfo($"[KILLFEED] diagnostics=summary;seen={KillLogBudget.Seen};printed={KillLogBudget.Printed};suppressed={KillLogBudget.Suppressed};policy=first-3-and-every-100-per-kind");
+        KillLogBudget.Reset();
+        Counters.Reset(); KillCounterHud.Reset();
         Ledger.Reset(); Cards.Clear(); Bursts.Clear(); _active = null; _originScope = null;
         // 1.2.19: the feedback allowance is per LEVEL too (12 lines, then one exhaustion receipt), not per process.
         _diagnosticBudget = FeedbackLines;
@@ -258,6 +264,7 @@ internal static class KillTracker
             Plugin.KillHeavyHealthThreshold != null ? Plugin.KillHeavyHealthThreshold.Value : KillPolicy.DefaultHeavyHealthThreshold);
         KillPresentation presentation = KillPresentationPolicy.Build(decision.Kind, enemy.HealthMax, tiers,
             IsFlyer(agent), HasArmorLimb(enemy));
+        Counters.Add(presentation.Tier);
         HitSound.OnLocalKill(presentation.Tier, presentation.Flight);
         // Head-top kill icon: the world anchor is snapshotted ONCE, right here, while this enemy is still the
         // object that just died, and the icon freezes on it (1.2.16). The corpse may sink, be hidden or be
@@ -286,7 +293,8 @@ internal static class KillTracker
             Plugin.MaxDistance?.Value ?? KillDefaults.MaxDistance, agent.EnemyDataID, presentation.Flight,
             iconToken, iconExpiresAt);
         Cards.Enqueue(card, now, Plugin.CardLifetime.Value, Plugin.FadeSeconds.Value, ClampCards(Plugin.MaxCards.Value));
-        Plugin.Instance.Log.LogInfo($"[KILLFEED] classification={(decision.Kind == KillKind.Weakspot ? "WEAKSPOT" : "NORMAL")};tier={presentation.Tier};flight={presentation.Flight};healthMax={enemy.HealthMax:0.##};enemyId={agent.EnemyDataID};rawName={rawName};displayName={displayName};distance={card.DistanceText};limbObserved={root.LimbObserved}.");
+        if (KillLogBudget.TryLog(decision.Kind == KillKind.Weakspot ? "classification=WEAKSPOT" : "classification=NORMAL"))
+            Plugin.Instance.Log.LogInfo($"[KILLFEED] classification={(decision.Kind == KillKind.Weakspot ? "WEAKSPOT" : "NORMAL")};tier={presentation.Tier};flight={presentation.Flight};healthMax={enemy.HealthMax:0.##};enemyId={agent.EnemyDataID};rawName={rawName};displayName={displayName};distance={card.DistanceText};limbObserved={root.LimbObserved}.");
     }
     internal static void CompleteFromAgent(EnemyAgent agent)
     {

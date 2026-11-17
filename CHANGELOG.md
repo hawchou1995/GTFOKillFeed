@@ -1,5 +1,20 @@
 # 更新日志
 
+## 1.2.21
+- 修复计数未显示：1.2.20 只接受 GetWorldCamera，而本机局内 HUD 使用手动 CellUI 画布，此入口为 null。现在核对 m_cellUICanvas 的根层级、相机裁剪层、目标像素、画布布局与完整 viewport 后投影，不误拒绝按需渲染的 disabled 相机，也不使用主相机猜测。
+- 细分 health renderer/sprite/parent、画布相机/root/尺寸/viewport 失败原因；placed 记录实际相机来源、三档计数和图标资源状态。探测与绘制均不写入原生血条位置或缩放。
+- 消融目标增加 active/enabled、sharedMesh/vertexCount 检查，过滤换模残留或无有效网格的 renderer；这属于输入防护，不能据此声称日志中 Decay.InitializeInternal 的五次原生 NRE 根因已被完全证明或消除。
+- 增加直接链接生产 KillCounterHud 的 API 边界重放：旧版相机条件下确认失败，修复版实际执行 Tick/Draw，覆盖三组图标数字、零值、无图标回退、全长血条、门控与各个画布拒绝条件。不是 Unity 实机渲染。
+- 发布前实测（2026-11-17，TOA Pure）：1.2.21 成功使用 cellui-manual-verified 放置血条下计数，三张图标资源齐全，远征成功后返回大厅；作者反馈计数基本正常。本模组日志 426 行无 Warning/Error/Fatal，未见 Decay.InitializeInternal 异常栈；DBO 接管消融时按设计让位（skipped=1636、failed=0），未执行本插件原生消融，因此不声称无 DBO 环境的 NRE 已根治，也不把初始 0/0/0 当作全部累计值逐项验证。
+
+## 1.2.20
+- 新增 `KillCounter/Enabled=true`：本机玩家血条下方右端对齐显示 Minor / Elite / Boss 三档原有图标与完整击杀数；沿用本机致死结算和 Ledger 去重，F9 预览不计入，离开远征清零。独立开关仅隐藏显示，不阻止累计。
+- 批量消融：并发仍限2具，在原EndAt前0.5秒内最多两次预约，加截止点一次终态尝试；只重试暂时满员/空池，不重播已隐藏模型，不延长隐藏/回收截止，不强行归还 playing/unknown 实例。
+- 增加不受逐尸体采样限制的 `fade=totals`，分别汇总 started/deferredAttempts/skipped/failed；碎块探针不再把无root/读取失败误记为0。
+- 包含此前未升版的逐肢日志限流、跨关音效缓存恢复和原生消融武装修复。发现第三方接管 `Decay.Play` 时仍让位，不改第三方模组配置。
+- Code Review 修复：已启动消融的释放状态单调保持，避免运行中热切换击飞设置后在截止点误报 `visual=kept`；IL 门禁验证准备/截止两处 `deferTransient=true/false` 实参，防止容量重试被静默关闭。
+- 当时的实机边界：图标尺寸/位置与批量消融观感待作者进图确认；离线预览不是游戏截图。后续计数 HUD 的实测结论见 1.2.21，批量消融在第三方让位场景外仍需实机确认。
+
 ## 1.2.19
 - **霰弹枪弹丸改为「按次开火的弹丸窗口」合并（跨帧也只有一个数字）**：1.2.17 实机日志（`pellet merge=True`）里一次开火（`Fire captured: fired=1, rays=1`）之后，弹丸伤害在**后续 12 帧**陆续结算（2.85–3.31 各出一个数字），而同帧判据 `fireFrame == Time.frameCount` 在 `Fire` 返回的那一帧就把作用域关掉了，所以每颗弹丸各自成数。现在一次开火开一个 **volley**：`Gear.Shotgun.Fire`/`Gear.ShotgunSynced.Fire` 前缀记录 `startFrame`、`startTime=Time.unscaledTime`、期望弹丸数（能安全读到 `ArchetypeDataBlock.ShotgunBulletCount` 就用它，读不到记 `unknown`）、合并/显示开关与装备类别，volley 在后续帧继续收弹丸。时间窗判据 `FeedbackPolicy.IsShotgunFireScopeCurrent(startTime, now, drained)`：同一 volley 内、`now - startTime ≤ 0.5 s`、未被 drain，**不再要求同帧**。
 - **弹丸归属必须同时满足「窗口开着」和「装备类别一致」（review F1）**：只有 `FeedbackPolicy.IsVolleyHit(windowOpen, volleyCategoryId, hitCategoryId)` 为真才算弹丸——已知 volley 类别时异类别命中一律拒绝，**命中自身类别未知（0）也一律拒绝**（这类命中保持立即显示，绝不会被霰弹隐藏开关吞掉）；volley 自身类别未知（无 `GearCategoryData` 的多弹丸武器）时接受，因为开这个 volley 的多弹丸 `Fire` 就是它唯一能给出的证明。修复前：霰弹打空时窗口会撑满 0.5 s，这期间步枪/近战/其它来源的命中被当成弹丸并入 batch（延迟、均值位置、数值相加），且 `ShowShotgunDamageNumbers=false` 时这些数字直接消失。
@@ -11,6 +26,7 @@
 - **修复实机「布娃娃被自己的 R3 守卫误杀」（rung 1 改为信任游戏自己的引用）**：1.2.18 的活体层级启发式（宿主是模型祖先/子孙即拒）也作用在 `EnemyAgent.RagdollInstance` 上。实机 9 次 `schedule=accepted` 里 3 次（sid 1/4/7）被它判成 `rung=ragdoll-instance;reason=instance-under-living-model`，随后 `ragdoll=final-probe` → `launch=unavailable;attempts=17;haveRagdoll=no`。死后游戏正是把布娃娃挂在模型之下，所以 rung 1 现在只按引用本身判定：有引用 + 租约 `BodyCount>0` 即接受；只拒绝可证的假候选，并各自具名——`instance-is-model-root`（引用就是活体模型/敌人根）、`instance-no-bodies`（租约无刚体）、`instance-unreadable`（读引用抛异常/原生对象已销毁），引用为空是死亡当帧的正常协程状态、不占日志额度。rung 2–4（`RagdollScript`/`EnemyRagdollRef`/裸 `Rigidbody`）的活体与 `ragdolled` 门完全保留。
 - **修复消融的两个实机根因（不再 `Decay.Initialize`，池化路径 fail-closed）**：实机 `fade=native-unavailable;reason=no-decay-component` → 池化借用 → `fade=failed;reason=initialize-threw;message=System.NullReferenceException`（sid 2/3）。①尸体自带 `Decay` 的查找范围扩到 **布娃娃租约根** → `ModelRoot` → `EnemyRoot`（死后 Decay 常挂在布娃娃上），找到就用它播放；②**池化借用一律不播放（review F2）**：借来的实例 `m_targetRenderer` 指向上一次溶解的克隆渲染器，无法证明属于当前尸体，而唯一能绑定的 `Decay.Initialize` 已被禁用且实机抛 NRE——所以 `DecayFadeTarget.Ready` 恒为 `false`（IL 门禁钉死：不调用任何方法、不读任何 Decay 状态），借用实例只会被探测并**原样归还一次**，并打印终态 `fade=skipped;reason=pool-unverifiable;note=pooled-instance-unverifiable`；③全插件 `Decay.Initialize` 调用数为 **0**；④终态 `fade=` 行改用**独立额度**（review F5）：`fade=fallback`／`fade=native-unavailable` 这类回执只花有界原因预算，每关前 8 具尸体的终态行无条件打印，且**一个 `scheduleId` 只能领取一次终态行**，结构上保证「每具尸体恰好一条终态」。异常仍 fail-safe 归还、不 `Destroy`、不改 `timeScale`、不阻断 `Hide`/`RecyclePhysics`/队列收尾。`no-free-instance` 语义不变（池容量问题）。
 - 本版程序集版本为 `1.2.19.0`。**未做实机验证**：自定义/模组霰弹是否真的跨帧结算、0.05 s 静默阈值的手感、`ShotgunBulletCount` 与实机命中弹丸数的偏差（现在只影响 `expected=` 诊断，不再劈开数字）；异类别命中是否真的立刻出数（`[DN] merged;pellets=` 应只等于真实弹丸数）；尸体两项修复——被误杀的 3 具（sid 1/4/7）是否恢复击飞、布娃娃根上的 `Decay` 是否真被找到并播放、`fade=skipped;reason=pool-unverifiable` 是否取代了 NRE（即消融是否只剩原生这一条路）——均需实机确认；本版尚未打包发布。
+- **此前 1.2.19 本地热修（未单独升版）已恢复池化消融**：`Ready` 使用 TryCast、空 IRF 表与目标指针回读，拒绝身份不符并将武装异常独立命名为 `pool-arm-failed`（failed，不是 skipped）。2026-11-17 复核 Survival 日志已有两次池化 `fade=begun`；原生 NRE 内部根因、长期回池与本版提前预约观感仍未由这段日志证明。此记录仅说明历史本地构建，不代表所有同号 DLL 字节相同。
 
 ## 1.2.18
 - **卡片与头顶图标成为两个独立开关（旧键自动迁移）**：新增 `Card/Enabled`（默认 true）与 `KillIcon/HeadEnabled`（默认 false），两者可同时开、同时显示。旧 `KillIcon/Display` 继续按旧语义生效（`Head`/无法识别 = 只开头顶图标，`Card`/`Cards` = 只开卡片），迁移状态写入 `KillIcon/ViewMode`（`Legacy:Head`/`Legacy:Card`/`Explicit`）；显式设置两个新开关后旧键即失效，程序不改写用户既有值。启动与每次热重载打印一条 `[KILLVIEW] head=…;card=…;mode=…;headSource=…;cardSource=…` 回执。

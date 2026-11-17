@@ -28,6 +28,7 @@ public sealed class Plugin : BasePlugin
     internal static ConfigEntry<bool> ShowDamageNumbers, CorpseEffects, ShowShotgunDamageNumbers, MergeShotgunPellets, CorpseExplosionFx, DamageNumberApproachEffect;
     internal static ConfigEntry<float> DamageNumberSize, DamageNumberLifetime, DamageNumberOpacity, CorpseExplosionDelay, CorpseTravelScale, BackgroundOpacity, MinLaunchDistance, MaxLaunchDistance;
     internal static ConfigEntry<bool> CorpseFade;
+    internal static ConfigEntry<bool> KillCounterEnabled;
     internal static ConfigEntry<bool> CorpseLaunch, CorpseDismember, CorpseChunks, CorpseBurstVisual, CorpseBurstSound;
     internal static ConfigEntry<string> DamageNumberWeakspotColor;
     internal static ConfigEntry<bool> TeammateMarkEnabled, TeammateMarkHideDuringEmp, TeammateMarkLogMarks;
@@ -77,6 +78,7 @@ public sealed class Plugin : BasePlugin
         SoundConfig = ScanSoundConfig();
         Enabled = Config.Bind("General", "Enabled", KillDefaults.Enabled, "总开关：控制本地玩家的击杀反馈（击杀卡片或头顶击杀图标）。默认 true；关闭后不绘制任何击杀反馈，也不播放击杀音效。保存即热重载。");
         Language = Config.Bind("General", "Language", "zh", "卡片文案语言，默认 zh（中文）。敌人名称仍使用 Hikaria 默认表加自定义覆盖，不受此处影响。保存即热重载。");
+        KillCounterEnabled = Config.Bind("KillCounter", "Enabled", true, "在本机玩家血条下方右对齐显示三档击杀图标与本次远征击杀数。默认 true；关闭只隐藏计数，仍记录已确认的本机击杀，离开远征清零。保存即热重载。");
         ShowEnemyHealth = Config.Bind("Card", "ShowEnemyMaxHealth", true, "在击杀卡片上显示敌人最大生命值。默认 true；关闭后卡片只显示距离与名称，不显示血量。保存即热重载。");
         ShowDistance = Config.Bind("Card", "ShowDistance", true, "显示本地玩家在击杀瞬间与敌人的距离。默认 true。保存即热重载。");
         ShowDamageNumbers = Config.Bind("DamageNumbers", "Enabled", true, "显示本地造成的护甲、普通与弱点伤害数字。默认 true；关闭后不绘制任何伤害数字，棱彩与档位效果也一并停止。保存即热重载。");
@@ -129,7 +131,7 @@ public sealed class Plugin : BasePlugin
         EnemyBarBorderColor = Config.Bind("EnemyBar", "BorderColor", "#0B0E10", "血条边框与文字阴影颜色，格式 #RRGGBB 或 #RRGGBBAA。默认 #0B0E10，非法值回落默认。保存即热重载。");
         EnemyBarLogFocus = Config.Bind("EnemyBar", "LogFocus", false, "记录焦点被接受或拒绝的原因，用于排查改过的敌人为何一直不显示血条。默认 false（不输出）；开启后每个原因有独立输出上限。保存即热重载。");
         CorpseExplosionFx = Config.Bind("Corpse", "ExplosionFx", false, "播放游戏原生的 FXC_FlyerDeath 尸体爆裂特效及其爆裂音效。默认 false（关闭）：击飞、断肢、碎块、隐藏租约回收与死亡统计都不受影响。热关闭时会同时清空待播的合并音效。保存即热重载。");
-        CorpseFade = Config.Bind("Corpse", "FadeEffect", true, "尸体被隐藏时用游戏原生 DecayEffect 在约 0.5 秒内溶解消失，而不是瞬间消失。默认 true：只驱动尸体自己身上、而且游戏已经武装好的那份原生 Decay 组件——只调用 Play(0.5f)，绝不调用 Initialize，要求它的 m_targetRenderer 仍然有效，并用 m_playing 确认真的开始。该组件缺失或不安全时，只会去游戏原生 Decay 池借用一次、探测后原样归还，本版本从不播放借来的实例（探测恒为 pool-unverifiable），所以这种情况最终仍是瞬间隐藏。绝不销毁任何对象。若其它模组 patch 过 Decay.Play、prefab 或池不可用、或游戏暂停，同样回落为瞬间隐藏。每次溶解都可能播放游戏自己的 MEDIUM_CORPSE_DECOMP 尸体分解音——该音属于原生 decay，不受 Corpse/ExplosionFx 控制，这里也绝不使用被关掉的 ENEMYEXPLODE 爆裂音。关闭后从下一具尸体起完全不做溶解。保存即热重载。");
+        CorpseFade = Config.Bind("Corpse", "FadeEffect", true, "尸体被隐藏时用游戏原生 DecayEffect 在约 0.5 秒内溶解消失，而不是瞬间消失。默认 true：只驱动尸体自己身上、而且游戏已经武装好的那份原生 Decay 组件——只调用 Play(0.5f)，绝不调用 Initialize，要求它的 m_targetRenderer 仍然有效，并用 m_playing 确认真的开始。该组件缺失或不安全时，从游戏原生 Decay 池借用一具实例，并按游戏自己的方式武装它（Decay.Initialize 后回读 m_targetRenderer，确认它确实指向这具尸体的 renderer）才 Play；武装抛异常或绑定到别的 renderer 时立刻 Cleanup+Return 恰好一次并记 reason=pool-arm-failed（未武装则记 pool-unverifiable），这些情况最终仍是瞬间隐藏。绝不销毁任何对象。若其它模组 patch 过 Decay.Play、prefab 或池不可用、或游戏暂停，同样回落为瞬间隐藏。每次溶解都可能播放游戏自己的 MEDIUM_CORPSE_DECOMP 尸体分解音——该音属于原生 decay，不受 Corpse/ExplosionFx 控制，这里也绝不使用被关掉的 ENEMYEXPLODE 爆裂音。关闭后从下一具尸体起完全不做溶解。保存即热重载。");
         CorpseLaunch = Config.Bind("Corpse", "Launch", true, "本地尸体被击飞：按 MinLaunchDistance/MaxLaunchDistance 与 TravelScale 施加初速。默认 true，与 1.2.16 行为一致。父开关 Corpse/Enabled 关闭时无效；关闭本项只去掉击飞与速度上限，断肢、碎块、爆裂与隐藏/回收租约照旧。保存即热重载。");
         CorpseDismember = Config.Bind("Corpse", "Dismember", true, "尸体断肢：破坏肢体网格并触发游戏原生 Destruction 事件。默认 true，与 1.2.16 行为一致。关闭后不再调用 BreakLimbs（既不破坏肢体也不触发原生 GibData）；击飞、爆裂、隐藏与回收不受影响。父开关 Corpse/Enabled 关闭时无效。保存即热重载。");
         CorpseChunks = Config.Bind("Corpse", "Chunks", true, "断肢产生的碎块（原生 CD_Gib）是否由本插件捕获并加初速、缩放与限距。默认 true，与 1.2.16 行为一致。关闭后碎块仍由游戏原生逻辑生成与回收，本插件不登记、不施加初速、不缩放、不限距；断肢、击飞、爆裂与队列回收不受影响。父开关 Corpse/Enabled 关闭时无效。保存即热重载。");

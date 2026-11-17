@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <LangVersion>10.0</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <GTFO_DIR Condition="'$(GTFO_DIR)' == ''"></GTFO_DIR>
+  </PropertyGroup>
+  <Target Name="RequireGtfoDir" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="'$(GTFO_DIR)' == ''" Text="GTFO_DIR is not set. Point it at a directory containing BepInEx/core and BepInEx/interop (e.g. -p:GTFO_DIR=/path/to/Survival)." />
+  </Target>
+  <ItemGroup>
+    <!-- Real BepInEx configuration engine: this project proves the hot-reload end to end through
+         BepInEx's own ConfigFile, not through a re-implementation. -->
+    <Reference Include="BepInEx.Core">
+      <HintPath>$(GTFO_DIR)\BepInEx\core\BepInEx.Core.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Compile Include="..\..\src\HawChow.GTFOKillFeed\KillPolicy.cs" Link="KillPolicy.cs" />
+    <Compile Include="..\..\src\HawChow.GTFOKillFeed\FeedbackPolicy.cs" Link="FeedbackPolicy.cs" />
+    <Compile Include="..\..\src\HawChow.GTFOKillFeed\BarPolicy.cs" Link="BarPolicy.cs" />
+    <Compile Include="..\..\src\HawChow.GTFOKillFeed\TeammateMarkPolicy.cs" Link="TeammateMarkPolicy.cs" />
+    <Compile Include="..\..\src\HawChow.GTFOKillFeed\AssetReloadPolicy.cs" Link="AssetReloadPolicy.cs" />
+    <Compile Include="..\..\src\HawChow.GTFOKillFeed\ConfigHotReloadGate.cs" Link="ConfigHotReloadGate.cs" />
+    <Compile Include="..\..\src\HawChow.GTFOKillFeed\CardPresentation.cs" Link="CardPresentation.cs" />
+    <Compile Include="..\..\src\HawChow.GTFOKillFeed\HitSoundPolicy.cs" Link="HitSoundPolicy.cs" />
+    <Compile Include="..\..\src\HawChow.GTFOKillFeed\DamageFxPolicy.cs" Link="DamageFxPolicy.cs" />
+    <Compile Include="..\..\src\HawChow.GTFOKillFeed\FocusOutlinePolicy.cs" Link="FocusOutlinePolicy.cs" />
+    <Compile Include="..\..\src\HawChow.GTFOKillFeed\HitMarkerPolicy.cs" Link="HitMarkerPolicy.cs" />
+    <Compile Include="..\..\src\HawChow.GTFOKillFeed\KillIconPolicy.cs" Link="KillIconPolicy.cs" />
+    <Compile Include="..\..\src\HawChow.GTFOKillFeed\CorpseSwitches.cs" Link="CorpseSwitches.cs" />
+    <Compile Include="..\..\src\HawChow.GTFOKillFeed\KillViewPolicy.cs" Link="KillViewPolicy.cs" />
+    <Compile Include="..\..\src\HawChow.GTFOKillFeed\KillViewConfigApply.cs" Link="KillViewConfigApply.cs" />
+    <Compile Include="..\..\src\HawChow.GTFOKillFeed\CfgPresence.cs" Link="CfgPresence.cs" />
+    <Compile Include="..\..\src\HawChow.GTFOKillFeed\SoundSettings.cs" Link="SoundSettings.cs" />
+    <Compile Include="..\..\src\HawChow.GTFOKillFeed\SoundConfigPlan.cs" Link="SoundConfigPlan.cs" />
+    <Compile Include="..\..\src\HawChow.GTFOKillFeed\SoundConfigBinding.cs" Link="SoundConfigBinding.cs" />
+  </ItemGroup>
+</Project>

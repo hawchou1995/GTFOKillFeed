@@ -169,6 +169,7 @@ internal static class CorpseFadePolicy
         CorpseFadeOutcome.BorrowError => "borrow-error",
         CorpseFadeOutcome.ProbeUnknown => "probe-unknown",
         CorpseFadeOutcome.PoolUnverifiable => "pool-unverifiable",
+        CorpseFadeOutcome.PoolArmFailed => "pool-arm-failed",
         CorpseFadeOutcome.PlayThrew => "play-threw",
         CorpseFadeOutcome.PlayNotObserved => "play-not-observed",
         _ => "unexpected"
@@ -202,6 +203,10 @@ internal static class CorpseFadePolicy
         if (playing) return CorpseFadeNativePath.AlreadyPlaying;
         return CorpseFadeNativePath.Started;
     }
+    // 1.2.20: one place decides what a pooled arm answer means. Only a normal return AND a bound identity counts as
+    // Armed, so neither an exception nor a silently different renderer can ever reach Play.
+    internal static CorpseFadeArm ArmVerdict(bool threw, bool targetBound)
+        => threw ? CorpseFadeArm.Failed : targetBound ? CorpseFadeArm.Armed : CorpseFadeArm.Refused;
     internal static bool ShouldAttemptNative(CorpseFadeNativePath path) => path == CorpseFadeNativePath.Started;
     // "No component on this model" and "already playing" are the two facts an operator needs once, because
     // they explain why a corpse fell back to the pooled path. The user's own switches stay silent.
@@ -272,14 +277,24 @@ internal enum CorpseFadeOutcome
     NoFreeInstance,
     BorrowError,
     ProbeUnknown,
-    // 1.2.19: the pooled path no longer initialises anything, so the two initialize-* outcomes collapse into one
-    // honest state: the borrowed instance was never armed by the game and is handed straight back.
-    // 1.2.19 F2: the pooled path is fail-closed - a borrowed instance can never prove it belongs to this corpse,
-    // so it is borrowed, probed and handed back, never played.
+    // 1.2.19: the pooled path used to initialise nothing, so an unarmed borrow collapsed into PoolUnverifiable.
+    // 1.2.20 arms the borrow the way the game does, so the two answers are kept apart: PoolUnverifiable = nothing was
+    // armed (an instance that cannot be ours), PoolArmFailed = the arm call threw or bound a different renderer.
     PoolUnverifiable,
+    PoolArmFailed,
     PlayThrew,
     PlayNotObserved,
     Unexpected
+}
+
+// 1.2.20: the three answers a pooled arm attempt can give. Refused = nothing was armed (the instance is handed
+// back untouched), Armed = the component now reports the requested renderer, Failed = the native call threw or
+// bound itself to a different renderer.
+internal enum CorpseFadeArm
+{
+    Refused,
+    Armed,
+    Failed
 }
 
 // Thin, Unity-free surface over the native API so the borrow/hand-back decisions can be proven by the
@@ -287,9 +302,9 @@ internal enum CorpseFadeOutcome
 internal interface ICorpseFadeTarget
 {
     CorpseFadeBorrow TryBorrow(out object handle);
-    // 1.2.19: readiness only - the adapter never initialises a native Decay (that is what threw the native
-    // NullReferenceException on real machines). A borrowed instance is usable only when the game armed it.
-    bool Ready(object handle);
+    // 1.2.20: a borrowed instance keeps the PREVIOUS corpse's m_targetRenderer until it is re-initialised, so the
+    // adapter arms it exactly like ES_Dead does and then proves identity by reading that field back.
+    CorpseFadeArm Ready(object handle, object renderer);
     void Play(object handle, float seconds);
     CorpseFadeState Probe(object handle);
     void Cleanup(object handle);
@@ -535,27 +550,27 @@ internal sealed class CorpseFadeCoordinator
                 outcome = CorpseFadeOutcome.InstanceBusy;
                 return false;
             }
-            // 1.2.19 (F2 review): FAIL-CLOSED. A borrowed instance can never prove it belongs to THIS corpse (its
-            // m_targetRenderer still points at the previous corpse's cloned renderer) and the only way to bind it,
-            // Decay.Initialize, is forbidden (native NRE, gated to 0 calls). So the pool is borrowed, probed and
-            // handed back - never played - and the refusal is named. The Play call below therefore stays unreachable
-            // in production; the two gates on DecayFadeTarget.Ready keep it that way.
-            bool ready;
-            try { ready = target.Ready(handle); }
+            // 1.2.20: the borrowed instance is ARMED the way the game arms its own (ES_Dead.DecayDelayed:
+            // GetInstance -> Initialize(renderer, irfs) -> Play) and accepted only when the component then reports
+            // THIS renderer. 1.2.18 threw a native NullReferenceException from that call, so every answer other than
+            // Armed hands the instance back exactly once: a pool slot can never leak, and a failed arm is a named
+            // outcome (`pool-arm-failed`) instead of a silent skip.
+            CorpseFadeArm arm;
+            try { arm = target.Ready(handle, renderer); }
             catch (Exception error)
             {
-                // Reading the readiness fact threw: fail closed, hand the instance back and name the state.
                 LastError = error;
-                Skips++;
+                Failures++;
                 ReleaseManual(target, handle);
-                outcome = CorpseFadeOutcome.PoolUnverifiable;
+                outcome = CorpseFadeOutcome.PoolArmFailed;
                 return false;
             }
-            if (!ready)
+            if (arm != CorpseFadeArm.Armed)
             {
-                Skips++;
+                if (arm == CorpseFadeArm.Failed) Failures++;
+                else Skips++;
                 ReleaseManual(target, handle);
-                outcome = CorpseFadeOutcome.PoolUnverifiable;
+                outcome = arm == CorpseFadeArm.Failed ? CorpseFadeOutcome.PoolArmFailed : CorpseFadeOutcome.PoolUnverifiable;
                 return false;
             }
             // Play may throw or be swallowed by a third-party patch; the ONLY ownership proof is the

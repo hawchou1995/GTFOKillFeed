@@ -28,6 +28,7 @@ public sealed class KillHud : MonoBehaviour
             DamageNumbers.Tick(now); CorpseFeedback.Tick(now); TeammateMarks.Tick(now, _visible);
             TickCardIcons(now);
             KillIconHud.Tick(now);
+            KillCounterHud.Tick(now);
             if (!Plugin.Enabled.Value) return;
             if (Plugin.ToggleKey.Value != KeyCode.None && Input.GetKeyDown(Plugin.ToggleKey.Value)) _visible = !_visible;
             if (Plugin.PreviewKey.Value != KeyCode.None && Input.GetKeyDown(Plugin.PreviewKey.Value))
@@ -49,6 +50,7 @@ public sealed class KillHud : MonoBehaviour
             DamageNumbers.Draw();
             EnemyBar.Draw();
             TeammateMarks.Draw();
+            KillCounterHud.Draw(_normalIcon, _weakIcon, _heavyIcon);
             // Presentation switch: Head (default) draws the BFV kill icons above the dead enemies; Card keeps
             // the exact previous card layout. Both sit behind the same F7 / General/Enabled gate above.
             // The card path is ALWAYS evaluated now (review F1): in Card mode the cards are the presentation,

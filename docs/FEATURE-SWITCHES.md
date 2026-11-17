@@ -125,6 +125,21 @@ Bind 之后应用。两条迁移只写自己的新键，不改写对方的旧键
   缓冲/注册表饱和或投影无法证明时隐藏头顶图标，绝不把它当成无遮挡。卡片是否回退
   只看 `Card/Enabled`，不会强行开启已关闭的卡片。
 
+## 8b. 血条下击杀计数（1.2.21 新增）
+
+| 功能 | 键 | 默认 | 父功能 / 关系 | 关闭后 |
+|---|---|---|---|---|
+| 三档击杀图标 + 本次远征击杀数 | `KillCounter/Enabled` | true | `General/Enabled` + F7 | 不画计数；卡片、头顶图标、音效、血条本身都不受影响 |
+
+- 计数只来自既有 `KillTracker` 的击杀账本：每个敌人死亡记一次，按呈现档位（普通/精英/重型）分列，
+  累加到 `int.MaxValue` 饱和；F9 预览不计数，关卡重置时与总数一起清零。
+- 位置是本机血条的真实屏幕坐标（`KillCounterPolicy.TryLayout` + `KillCounterAnchorPolicy`）：右边缘对齐
+  血条右边缘、贴着血条下沿，像素不够时整组等比缩小。读不到可验证的 CellUI 合成器（缺 sprite、血条缩放
+  为 0、cullingMask / 视口 / 画布尺寸与目标分辨率不符）就拒画并打一行 `held;` 原因——不做场景扫描、
+  不猜主相机、不移动也不缩放原生血条。
+- 已知边界：验证是源码与进程内策略证据（`tests/GTFOKillFeed.Smoke` 的 `KillCounterTests`、
+  `tests/GTFOKillFeed.HudReplay` 的生产 Tick/Draw 重放），游戏内画面未验证。
+
 ## 9. 完整键表（由 `tools/feature_switch_inventory.py` 从源码生成）
 
 <!-- BEGIN:generated-keys -->
@@ -138,113 +153,116 @@ Bind 之后应用。两条迁移只写自己的新键，不改写对方的旧键
 | `Corpse/Chunks` | true | `Plugin.cs` |
 | `Corpse/Dismember` | true | `Plugin.cs` |
 | `Corpse/Enabled` | true | `Plugin.cs` |
-| `Corpse/ExplosionDelay` | 0.1f | `Plugin.cs` |
+| `Corpse/ExplosionDelay` | FeedbackPolicy.CorpseBurstDelay | `Plugin.cs` |
 | `Corpse/ExplosionFx` | false | `Plugin.cs` |
 | `Corpse/FadeEffect` | true | `Plugin.cs` |
 | `Corpse/Launch` | true | `Plugin.cs` |
-| `Corpse/MaxLaunchDistance` | 18f | `Plugin.cs` |
-| `Corpse/MinLaunchDistance` | 12f | `Plugin.cs` |
+| `Corpse/MaxLaunchDistance` | FeedbackPolicy.DefaultMaxDistance | `Plugin.cs` |
+| `Corpse/MinLaunchDistance` | FeedbackPolicy.DefaultMinDistance | `Plugin.cs` |
 | `Corpse/TravelScale` | 1f | `Plugin.cs` |
-| `DamageFx/DiamondThreshold` | 20000L | `Plugin.cs` |
-| `DamageFx/GoldThreshold` | 10000L | `Plugin.cs` |
-| `DamageFx/PrismaticEnabled` | true | `Plugin.cs` |
-| `DamageFx/PrismaticThreshold` | 60f | `Plugin.cs` |
-| `DamageFx/SilverThreshold` | 5000L | `Plugin.cs` |
-| `DamageFx/TiersEnabled` | true | `Plugin.cs` |
-| `DamageFx/WhiteThreshold` | 3000L | `Plugin.cs` |
-| `DamageNumbers/ApproachEffect` | false | `Plugin.cs` |
+| `DamageFx/DiamondThreshold` | DamageFxPolicy.DiamondThreshold | `Plugin.cs` |
+| `DamageFx/GoldThreshold` | DamageFxPolicy.GoldThreshold | `Plugin.cs` |
+| `DamageFx/PrismaticEnabled` | DamageFxPolicy.DefaultPrismaticEnabled | `Plugin.cs` |
+| `DamageFx/PrismaticThreshold` | DamageFxPolicy.DefaultPrismaticThreshold | `Plugin.cs` |
+| `DamageFx/SilverThreshold` | DamageFxPolicy.SilverThreshold | `Plugin.cs` |
+| `DamageFx/TiersEnabled` | DamageFxPolicy.DefaultTiersEnabled | `Plugin.cs` |
+| `DamageFx/WhiteThreshold` | DamageFxPolicy.WhiteThreshold | `Plugin.cs` |
+| `DamageNumbers/ApproachEffect` | FeedbackPolicy.DefaultApproachEffect | `Plugin.cs` |
 | `DamageNumbers/Enabled` | true | `Plugin.cs` |
 | `DamageNumbers/FontSize` | 27f | `Plugin.cs` |
-| `DamageNumbers/FontWeight` | 1f | `Plugin.cs` |
-| `DamageNumbers/Lifetime` | 0.72f | `Plugin.cs` |
+| `DamageNumbers/FontWeight` | FeedbackPolicy.DefaultNumberWeight | `Plugin.cs` |
+| `DamageNumbers/Lifetime` | FeedbackPolicy.NumberLifetime | `Plugin.cs` |
 | `DamageNumbers/MergeShotgunPellets` | true | `Plugin.cs` |
-| `DamageNumbers/Opacity` | 1f | `Plugin.cs` |
+| `DamageNumbers/Opacity` | FeedbackPolicy.DefaultNumberOpacity | `Plugin.cs` |
 | `DamageNumbers/ShowShotgunDamageNumbers` | true | `Plugin.cs` |
 | `DamageNumbers/WeakspotColor` | "#E5484D" | `Plugin.cs` |
 | `EnemyBar/Anchor` | "Head" | `Plugin.cs` |
-| `EnemyBar/BarHeight` | 5f | `Plugin.cs` |
-| `EnemyBar/BarWidth` | 200f | `Plugin.cs` |
+| `EnemyBar/BarHeight` | BarPolicy.DefaultHeight | `Plugin.cs` |
+| `EnemyBar/BarWidth` | BarPolicy.DefaultWidth | `Plugin.cs` |
 | `EnemyBar/BorderColor` | "#0B0E10" | `Plugin.cs` |
 | `EnemyBar/Enabled` | true | `Plugin.cs` |
 | `EnemyBar/FillColor` | "#E8ECEB" | `Plugin.cs` |
 | `EnemyBar/FillRedColor` | "#EF4C4C" | `Plugin.cs` |
 | `EnemyBar/FillYellowColor` | "#E6B84C" | `Plugin.cs` |
-| `EnemyBar/FocusOutlineEnabled` | true | `Plugin.cs` |
+| `EnemyBar/FocusOutlineEnabled` | FocusOutlinePolicy.DefaultEnabled | `Plugin.cs` |
 | `EnemyBar/GhostColor` | "#A8B0B2" | `Plugin.cs` |
-| `EnemyBar/HeadOffsetMetres` | 0.12f | `Plugin.cs` |
+| `EnemyBar/HeadOffsetMetres` | BarPolicy.DefaultHeadOffsetMetres | `Plugin.cs` |
 | `EnemyBar/HealthTextColor` | "#E8ECEB" | `Plugin.cs` |
 | `EnemyBar/LogFocus` | false | `Plugin.cs` |
-| `EnemyBar/MaxDistance` | 60f | `Plugin.cs` |
-| `EnemyBar/MaxScreenFraction` | 0.46f | `Plugin.cs` |
-| `EnemyBar/MinScreenFraction` | 0.1f | `Plugin.cs` |
+| `EnemyBar/MaxDistance` | BarPolicy.DefaultMaxDistance | `Plugin.cs` |
+| `EnemyBar/MaxScreenFraction` | BarPolicy.DefaultMaxScreenFraction | `Plugin.cs` |
+| `EnemyBar/MinScreenFraction` | BarPolicy.DefaultMinScreenFraction | `Plugin.cs` |
 | `EnemyBar/NameColor` | "#E8ECEB" | `Plugin.cs` |
-| `EnemyBar/NumberSize` | 12f | `Plugin.cs` |
-| `EnemyBar/Opacity` | 0.55f | `Plugin.cs` |
-| `EnemyBar/RedThresholdPercent` | 33f | `Plugin.cs` |
-| `EnemyBar/ScreenAnchorFraction` | 0.3f | `Plugin.cs` |
+| `EnemyBar/NumberSize` | BarPolicy.DefaultNumberSize | `Plugin.cs` |
+| `EnemyBar/Opacity` | BarPolicy.DefaultOpacity | `Plugin.cs` |
+| `EnemyBar/RedThresholdPercent` | BarPolicy.DefaultRedThresholdPercent | `Plugin.cs` |
+| `EnemyBar/ScreenAnchorFraction` | BarPolicy.DefaultScreenAnchorFraction | `Plugin.cs` |
 | `EnemyBar/ShowName` | true | `Plugin.cs` |
 | `EnemyBar/ShowNumbers` | true | `Plugin.cs` |
 | `EnemyBar/ShowWeakspotPart` | true | `Plugin.cs` |
 | `EnemyBar/TrackColor` | "#161A1C" | `Plugin.cs` |
-| `EnemyBar/VerticalOffset` | -8f | `Plugin.cs` |
+| `EnemyBar/VerticalOffset` | BarPolicy.DefaultVerticalOffset | `Plugin.cs` |
 | `EnemyBar/WeakspotColor` | "#EF4C4C" | `Plugin.cs` |
-| `EnemyBar/YellowThresholdPercent` | 66f | `Plugin.cs` |
-| `General/Enabled` | true | `Plugin.cs` |
+| `EnemyBar/YellowThresholdPercent` | BarPolicy.DefaultYellowThresholdPercent | `Plugin.cs` |
+| `General/Enabled` | KillDefaults.Enabled | `Plugin.cs` |
 | `General/Language` | "zh" | `Plugin.cs` |
-| `HitMarker/ColorArmor` | "#49ADC9" | `Plugin.cs` |
-| `HitMarker/ColorKill` | "#B92828" | `Plugin.cs` |
-| `HitMarker/ColorNormal` | "#FFFFFF" | `Plugin.cs` |
-| `HitMarker/ColorWeakspot` | "#FF8C00" | `Plugin.cs` |
-| `HitMarker/Enabled` | true | `Plugin.cs` |
+| `HitMarker/ColorArmor` | HitMarkerPolicy.DefaultArmorColor | `Plugin.cs` |
+| `HitMarker/ColorKill` | HitMarkerPolicy.DefaultKillColor | `Plugin.cs` |
+| `HitMarker/ColorNormal` | HitMarkerPolicy.DefaultNormalColor | `Plugin.cs` |
+| `HitMarker/ColorWeakspot` | HitMarkerPolicy.DefaultWeakspotColor | `Plugin.cs` |
+| `HitMarker/Enabled` | HitMarkerPolicy.DefaultEnabled | `Plugin.cs` |
 | `HitMarker/HitEnabled` | true | `Plugin.cs` |
 | `HitMarker/KillEnabled` | true | `Plugin.cs` |
-| `HitMarker/Size` | 64f | `Plugin.cs` |
+| `HitMarker/Size` | HitMarkerPolicy.DefaultSize | `Plugin.cs` |
 | `HitSound/Enabled` | true（1.2.16 旧键，升级后仍作父开关） | `SoundConfigBinding.cs` |
 | `HitSound/HitEnabled` | 迁移：新安装 false / 旧配置 true（跟随旧 Enabled 父开关） | `SoundConfigBinding.cs` |
 | `HitSound/HitVolume` | 迁移：新安装 0.4 / 旧配置 0.8（实际 = 值 × 主音量 ÷ 0.8） | `SoundConfigBinding.cs` |
 | `HitSound/KillEnabled` | 迁移：新安装 false / 旧配置 true（跟随旧 Enabled 父开关） | `SoundConfigBinding.cs` |
 | `HitSound/KillVolume` | 迁移：新安装 0.4 / 旧配置 0.8（实际 = 值 × 主音量 ÷ 0.8） | `SoundConfigBinding.cs` |
-| `HitSound/MinIntervalSeconds` | 0.05f | `Plugin.cs` |
-| `HitSound/MuteVanillaIndicator` | false | `Plugin.cs` |
-| `HitSound/Style` | "BF5" | `Plugin.cs` |
+| `HitSound/MinIntervalSeconds` | (float)HitSoundPolicy.DefaultMinIntervalSeconds | `Plugin.cs` |
+| `HitSound/MuteVanillaIndicator` | HitSoundPolicy.DefaultMuteVanillaIndicator | `Plugin.cs` |
+| `HitSound/Style` | HitSoundPolicy.DefaultStyle | `Plugin.cs` |
 | `HitSound/Volume` | 0.8 = 100% 主音量（1.2.16 旧键，升级后仍逐次生效） | `SoundConfigBinding.cs` |
 | `Input/PreviewKey` | KeyCode.F9 | `Plugin.cs` |
 | `Input/ToggleKey` | KeyCode.F7 | `Plugin.cs` |
-| `KillIcon/ArmorFlyerColor` | "#E6AB57" | `Plugin.cs` |
+| `KillCounter/Enabled` | true | `Plugin.cs` |
+| `KillIcon/ArmorFlyerColor` | KillIconPolicy.DefaultArmorPlateColor | `Plugin.cs` |
 | `KillIcon/Display` | "" | `Plugin.cs` |
-| `KillIcon/FlyerColor` | "#8FD3E8" | `Plugin.cs` |
+| `KillIcon/FlyerColor` | KillIconPolicy.DefaultWingsColor | `Plugin.cs` |
 | `KillIcon/HeadEnabled` | false | `Plugin.cs` |
-| `KillIcon/HeadGapMetres` | 0.3f | `Plugin.cs` |
-| `KillIcon/HeadLifetime` | 2.2f | `Plugin.cs` |
-| `KillIcon/HeadMaxIcons` | 6 | `Plugin.cs` |
-| `KillIcon/HeavyHealthThreshold` | 1000f | `Plugin.cs` |
-| `KillIcon/MinorHealthThreshold` | 120f | `Plugin.cs` |
+| `KillIcon/HeadGapMetres` | KillIconPolicy.DefaultGapMetres | `Plugin.cs` |
+| `KillIcon/HeadLifetime` | KillIconPolicy.DefaultLifetimeSeconds | `Plugin.cs` |
+| `KillIcon/HeadMaxIcons` | KillIconPolicy.DefaultMaxIcons | `Plugin.cs` |
+| `KillIcon/HeavyHealthThreshold` | KillPolicy.DefaultHeavyHealthThreshold | `Plugin.cs` |
+| `KillIcon/MinorHealthThreshold` | KillDefaults.MinorHealthThreshold | `Plugin.cs` |
 | `KillIcon/Opacity` | 0.5f | `Plugin.cs` |
 | `KillIcon/ViewMode` | "" | `Plugin.cs` |
-| `Layout/BackgroundOpacity` | 0f | `Plugin.cs` |
-| `Layout/CardLifetime` | 2.6f | `Plugin.cs` |
-| `Layout/FadeSeconds` | 0.45f | `Plugin.cs` |
+| `Layout/BackgroundOpacity` | FeedbackPolicy.DefaultPanelOpacity | `Plugin.cs` |
+| `Layout/CardLifetime` | KillDefaults.CardLifetime | `Plugin.cs` |
+| `Layout/FadeSeconds` | KillDefaults.FadeSeconds | `Plugin.cs` |
 | `Layout/HorizontalOffset` | 0f | `Plugin.cs` |
-| `Layout/IconSize` | 46f | `Plugin.cs` |
-| `Layout/MaxCards` | 3 | `Plugin.cs` |
-| `Layout/MaxDistance` | 999f | `Plugin.cs` |
+| `Layout/IconSize` | KillDefaults.IconSize | `Plugin.cs` |
+| `Layout/MaxCards` | KillDefaults.MaxCards | `Plugin.cs` |
+| `Layout/MaxDistance` | KillDefaults.MaxDistance | `Plugin.cs` |
 | `Layout/VerticalOffset` | 0f | `Plugin.cs` |
 | `TeammateMark/CustomIconPath` | "" | `Plugin.cs` |
 | `TeammateMark/Enabled` | true | `Plugin.cs` |
-| `TeammateMark/HeadClearanceMetres` | 0.05f | `Plugin.cs` |
+| `TeammateMark/HeadClearanceMetres` | TeammateMarkPolicy.DefaultHeadClearance | `Plugin.cs` |
 | `TeammateMark/HideDuringEMP` | false | `Plugin.cs` |
 | `TeammateMark/Icon` | "Cai" | `Plugin.cs` |
 | `TeammateMark/LogMarks` | false | `Plugin.cs` |
-| `TeammateMark/MaxDistanceMetres` | 60f | `Plugin.cs` |
-| `TeammateMark/MaxPixels` | 42f | `Plugin.cs` |
-| `TeammateMark/MinPixels` | 26f | `Plugin.cs` |
-| `TeammateMark/RefDistanceMetres` | 8f | `Plugin.cs` |
+| `TeammateMark/MaxDistanceMetres` | TeammateMarkPolicy.DefaultMaxDistance | `Plugin.cs` |
+| `TeammateMark/MaxPixels` | TeammateMarkPolicy.DefaultMaxPixels | `Plugin.cs` |
+| `TeammateMark/MinPixels` | TeammateMarkPolicy.DefaultMinPixels | `Plugin.cs` |
+| `TeammateMark/RefDistanceMetres` | TeammateMarkPolicy.DefaultRefDistance | `Plugin.cs` |
 <!-- END:generated-keys -->
 
 ## 10. 复现
 
 ```bash
-python tools/feature_switch_inventory.py                     # 重新生成 §9
-dotnet build tests/KillFeed.Tests/KillFeed.Tests.csproj -c Release
-tests/KillFeed.Tests/bin/Release/net6.0/KillFeed.Tests.exe   # 含清单完整性门禁
+python tools/feature_switch_inventory.py                     # 重新生成 §9（当前 keys=110）
+dotnet build tests/KillFeed.Tests/KillFeed.Tests.csproj -c Release -p:GTFO_DIR=/path/to/Survival
+dotnet tests/KillFeed.Tests/bin/Release/net6.0/KillFeed.Tests.dll   # SUMMARY pass=407;fail=0（含 gate.doc.* 清单门禁）
+dotnet build tests/GTFOKillFeed.Smoke/GTFOKillFeed.Smoke.csproj -c Release
+dotnet tests/GTFOKillFeed.Smoke/bin/Release/net6.0/GTFOKillFeed.Smoke.dll   # PASS: 1409（KillCounterTests 覆盖 §8b）
 ```

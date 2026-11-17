@@ -20,11 +20,9 @@ namespace HawChow.GTFOKillFeed;
 // patched-by-third-party, ...) and every line carries the scheduleId, the poll count and the native
 // exception type/message, because the shipped 1.2.9 line merged all of them into one catch-all reason and a
 // real host session (4/4 skipped, 78 ragdoll-unavailable) could not be diagnosed.
-// 1.2.19 (fade NRE root cause): the pooled path no longer calls Decay.Initialize at all. The real 1.2.18 log
-// showed `fade=failed;reason=initialize-threw;message=System.NullReferenceException` because a borrowed
-// instance is only an object, never an armed effect: the game initialises it itself. The reference
-// implementation (zose DeadBodyOptimization) likewise only finds an existing Decay via
-// GetComponentInChildren<Decay>(true) and takes over Play; readiness (m_targetRenderer) is the whole contract.
+// Pooled arming is isolated in DecayFadeTarget.Ready: TryCast the renderer, pass a real empty IRF list,
+// then verify m_targetRenderer before Play. Earlier logs showed an Initialize NRE, not its native cause.
+// The corpse-own path only plays an already-armed component; the pool path may arm a borrowed one.
 // 1.2.18 (fade root cause): a renderer that comes out of GetComponentsInChildren<Renderer>(true) is ALWAYS wrapped
 // as UnityEngine.Renderer. Il2CppInterop fills a T[] from Il2CppArrayBase<T>::op_Implicit, which calls get_Item ->
 // Il2CppReferenceArray<T>::WrapElement, and WrapElement constructs every element through typeof(T)'s (IntPtr)
@@ -61,13 +59,21 @@ internal static class FadeRendererCast
 
     internal static bool IsSkinned(Renderer renderer)
         => TryResolve(renderer, out SkinnedMeshRenderer skinned, out _) && skinned != null;
+    // Skin/model replacements can leave an enabled wrapper with no drawable mesh. Do not send it to native Initialize.
+    internal static bool HasDrawableMesh(Renderer renderer)
+    {
+        if (renderer == null) return false;
+        try
+        {
+            if (!renderer.enabled || !renderer.gameObject.activeInHierarchy) return false;
+            if (!TryResolve(renderer, out SkinnedMeshRenderer skinned, out MeshRenderer mesh)) return false;
+            Mesh data = skinned != null ? skinned.sharedMesh : mesh.GetComponent<MeshFilter>()?.sharedMesh;
+            return data != null && data.vertexCount > 0;
+        }
+        catch { return false; }
+    }
 
-    // 1.2.19: the ONE readiness fact, and the only thing KillFeed may ask of a Decay before playing it. A
-    // component is usable only when the game itself already armed it (m_targetRenderer points at a live
-    // renderer); KillFeed never calls Decay.Initialize any more. The 1.2.18 pooled path initialised a borrowed
-    // instance whose renderer was already dead - exactly the native NullReferenceException in the real log
-    // (`fade=failed;reason=initialize-threw` + `System.NullReferenceException`) - while the reference
-    // implementation only ever takes over the Play of a component the game already wired.
+    // Readiness of the corpse-own component only. Borrowed instances need Ready's target-identity proof.
     internal static bool HasTarget(Decay decay)
     {
         if (decay == null) return false;
@@ -100,14 +106,13 @@ internal static class CorpseFade
     private static readonly CorpseFadeDiagnostics Diagnostics = new();
     private static bool _patchChecked;
     private static bool _playPatched;
+    private static int _started, _deferred, _skipped, _failed;
 
     internal static int Active => Coordinator.Active;
 
-    // Called at the existing EndAt stage, immediately before the corpse is hidden/recycled.
-    // Called at the existing EndAt stage, immediately before the corpse is hidden/recycled. `native` is the
-    // Decay component the corpse's own model/hierarchy carries (resolved by CorpseFeedback from the snapshot
-    // taken in the death call), or null when the hierarchy exposed none.
-    internal static void TryBegin(Renderer renderer, bool offScene, bool inLevel, int scheduleId, Decay native = null)
+    // Bounded pre-cleanup reservation or the unresolved EndAt fallback, both before Hide/Recycle.
+    // `native` is the corpse-own component; null means the pooled path must supply its own proof.
+    internal static CorpseFadeAttempt TryBegin(Renderer renderer, bool offScene, bool inLevel, int scheduleId, Decay native = null, bool deferTransient = false)
     {
         try
         {
@@ -121,37 +126,38 @@ internal static class CorpseFade
             var plan = new CorpseFadePlan(
                 Plugin.CorpseFade != null && Plugin.CorpseFade.Value,
                 Plugin.CorpseEffects == null || Plugin.CorpseEffects.Value,
-                inLevel,
-                Paused(),
-                _playPatched,
-                PrefabIsSafe(),
-                PoolState(),
-                renderer != null && !ReferenceEquals(renderer, null),
-                offScene,
-                Coordinator.Active);
-            // 1) The corpse's own native Decay component first: no pool borrow and no renderer validation,
-            //    so a corpse the game never gave a ragdoll still dissolves (1.2.16, parity with the
-            //    reference mod). A refusal is a named line; a failure logs fade=fallback and the pooled
-            //    path below still runs, so the dissolve can only get more likely, never silently less.
-            if (TryNative(plan, native, renderer, scheduleId)) return;
+                inLevel, Paused(), _playPatched, PrefabIsSafe(), PoolState(),
+                renderer != null && !ReferenceEquals(renderer, null), offScene, Coordinator.Active);
+            if (TryNative(plan, native, renderer, scheduleId)) { _started++; return CorpseFadeAttempt.Started; }
             if (!CorpseFadePolicy.ShouldAttempt(plan))
             {
-                LogSkip(CorpseFadePolicy.SkipReason(plan), scheduleId);
-                return;
+                var skip = CorpseFadePolicy.SkipReason(plan);
+                if (deferTransient && CorpseFadeRetry.IsTransient(skip)) return Defer(CorpseFadePolicy.Reason(skip));
+                LogSkip(skip, scheduleId);
+                return CorpseFadeAttempt.Finished;
             }
-            if (!Coordinator.TryStart(Target, renderer, out CorpseFadeOutcome outcome)) { LogFailure(outcome, scheduleId); return; }
+            if (!Coordinator.TryStart(Target, renderer, out CorpseFadeOutcome outcome))
+            {
+                if (deferTransient && CorpseFadeRetry.IsTransient(outcome)) return Defer(CorpseFadePolicy.Reason(outcome));
+                LogFailure(outcome, scheduleId);
+                return CorpseFadeAttempt.Finished;
+            }
+            _started++;
             if (outcome == CorpseFadeOutcome.StartedProbeUnknown) LogStartedUnknown(scheduleId, renderer);
             else LogStarted(scheduleId, renderer);
+            return CorpseFadeAttempt.Started;
         }
-        catch (Exception error) { Warn(error); }
+        catch (Exception error) { _failed++; Warn(error); return CorpseFadeAttempt.Finished; }
+    }
+    private static CorpseFadeAttempt Defer(string reason)
+    {
+        _deferred++;
+        if (Diagnostics.AllowLine("waiting:" + reason))
+            Plugin.Instance?.Log.LogInfo("[CORPSE] fade=waiting;reason=" + reason + ";note=bounded-pre-cleanup-retry");
+        return CorpseFadeAttempt.Retry;
     }
 
-    // The corpse's own Decay component: the same native dissolve the game runs from ES_Dead, reached without
-    // patching a state machine. 1.2.19: it is only PLAYED, never initialised - KillFeed must never arm a Decay
-    // itself (that call on an unprepared component is the real log's native NullReferenceException), so the one
-    // readiness fact is the component's own m_targetRenderer, and ownership is confirmed from m_playing, the flag
-    // the native Play writes synchronously. The component belongs to the corpse, so nothing is borrowed, tracked
-    // or returned here - the Coordinator's pool bookkeeping stays untouched.
+    // Corpse-own Decay: play only an already-armed, safe component. This path never borrows or returns.
     private static bool TryNative(in CorpseFadePlan plan, Decay native, Renderer renderer, int scheduleId)
     {
         int stopAction = -1;
@@ -177,8 +183,7 @@ internal static class CorpseFade
         }
         try
         {
-            // 1.2.19: play only what the game already armed. A component without a live m_targetRenderer cannot
-            // dissolve anything, and initialising it here is exactly what the reference implementation never does.
+            // Do not re-initialize the corpse-own component; the game already owns its target binding.
             if (!FadeRendererCast.HasTarget(native)) { LogFallback("native-not-initialized", scheduleId); return false; }
             native.Play(CorpseFadePolicy.FadeSeconds);
         }
@@ -238,6 +243,9 @@ internal static class CorpseFade
         if (suppressed > 0)
             Plugin.Instance?.Log.LogInfo($"[CORPSE] fade=summary;terminal-suppressed={suppressed};cap={CorpseFadeDiagnostics.MaxTerminalPerLevel};note=more-corpuses-than-the-terminal-allowance-this-level");
         Diagnostics.Reset();
+        if (_started + _deferred + _skipped + _failed > 0)
+            Plugin.Instance?.Log.LogInfo($"[CORPSE] fade=totals;started={_started};deferredAttempts={_deferred};skipped={_skipped};failed={_failed};active={Coordinator.Active};gameReleases={Coordinator.GameReleases};manualReleases={Coordinator.ManualReleases};note=full-counts-not-log-samples");
+        _started = _deferred = _skipped = _failed = 0;
         Coordinator.ResetCounters();
     }
 
@@ -306,6 +314,7 @@ internal static class CorpseFade
 
     private static void LogSkip(CorpseFadeSkip skip, int scheduleId)
     {
+        _skipped++;
         // Deliberate user intent (feature off, lobby, no renderer, off-scene) stays silent; only gates an
         // operator has to explain print a terminal line (F5: the terminal budget is its own allowance, so a
         // `fade=fallback` receipt can never spend it and the first MaxTerminalPerLevel corpses always print).
@@ -317,6 +326,8 @@ internal static class CorpseFade
 
     private static void LogFailure(CorpseFadeOutcome outcome, int scheduleId)
     {
+        if (outcome == CorpseFadeOutcome.PoolUnverifiable) _skipped++;
+        else _failed++;
         string reason = CorpseFadePolicy.Reason(outcome);
         // F2 (1.2.19 review): the pooled path is fail-closed, so "this borrowed instance cannot be proven to be
         // ours" is a SKIP - it was handed back untouched, nothing was broken. Either way a corpse gets exactly ONE
@@ -388,17 +399,31 @@ internal static class CorpseFade
             return decay.m_playing ? CorpseFadeState.Playing : CorpseFadeState.Idle;
         }
 
-        // 1.2.19: the borrowed instance is never initialised. The native Initialize() has no exception path of its
-        // own (it *logs* when the renderer is a destroyed Unity object, 0x162fdd9) and on a pooled instance the
-        // game has not armed it throws a native NullReferenceException - the real log's
-        // F2 (1.2.19 review): FAIL-CLOSED, and deliberately not pretending otherwise. A pooled Decay carries the
-        // renderer of the corpse it dissolved LAST time (Decay clones its own renderer), so m_targetRenderer can
-        // never prove it points at THIS corpse; the only way to bind it would be Decay.Initialize, which is
-        // forbidden (native NullReferenceException on an unprepared instance, gated to 0 calls). KillFeed therefore
-        // NEVER plays a borrowed instance: the pool is only borrowed, probed and handed back, and this constant
-        // false is the single gate that enforces it (pinned by Verify + Test-CorpseFadeIl). Re-enabling the pooled
-        // path requires an interop-verified identity proof here - nothing else.
-        public bool Ready(object handle) => false;
+        // 1.2.20: the borrowed instance IS armed - exactly the way the game arms its own (ES_Dead.DecayDelayed:
+        // GetInstance -> Initialize(renderer, irfs) -> Play). 1.2.18 threw a native NullReferenceException from the
+        // same call, so it is treated as suspect instead of trusted: the renderer is resolved through TryCast, the
+        // IRF list is a real (empty) list rather than null, and the ONLY accepted proof of identity is the read-back
+        // of m_targetRenderer - the very field the native Play refuses to run without. Any exception or any other
+        // renderer is a refusal, and the coordinator hands the instance back exactly once.
+        public CorpseFadeArm Ready(object handle, object renderer)
+        {
+            if (handle is not Decay decay || decay == null) return CorpseFadeArm.Refused;
+            if (renderer is not Renderer target) return CorpseFadeArm.Refused;
+            if (!FadeRendererCast.HasDrawableMesh(target)) return CorpseFadeArm.Refused;
+            if (!FadeRendererCast.TryResolve(target, out SkinnedMeshRenderer skinned, out MeshRenderer mesh))
+                return CorpseFadeArm.Refused;
+            bool threw = false, bound = false;
+            try
+            {
+                var irfs = new Il2CppSystem.Collections.Generic.List<IRF.InstancedRenderFeature>();
+                if (skinned != null) decay.Initialize(skinned, irfs);
+                else decay.Initialize(mesh, irfs);
+                Renderer boundTarget = decay.m_targetRenderer;
+                bound = boundTarget != null && boundTarget.Pointer == target.Pointer;
+            }
+            catch (Exception error) { threw = true; Warn(error); }
+            return CorpseFadePolicy.ArmVerdict(threw, bound);
+        }
 
         public void Play(object handle, float seconds)
         {

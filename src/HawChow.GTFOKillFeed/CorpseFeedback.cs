@@ -137,7 +137,7 @@ public sealed class CorpseVisualLease : MonoBehaviour
             Renderer candidate = _renderers[i];
             try
             {
-                if (candidate == null || !candidate.enabled) continue;
+                if (candidate == null || !candidate.enabled || !FadeRendererCast.HasDrawableMesh(candidate)) continue;
                 // 1.2.18 (fade root cause): these elements are `Renderer` wrappers, so `is SkinnedMeshRenderer` never
                 // matched and the "prefer the skinned renderer" rule had never once fired. Ask the native class.
                 if (FadeRendererCast.IsSkinned(candidate)) return candidate;
@@ -202,6 +202,7 @@ internal static class CorpseFeedback
         internal float BodySize = 1f;
         internal Vector3 Direction, Origin, BurstOrigin;
         internal bool Broken, Exploded, OffSceneCleanupApplied;
+        internal CorpseFadeRetry Fade;
         // 1.2.16 (second real-machine pass): the launch state is closed out explicitly instead of being an
         // implicit "did we try yet" flag. `LaunchApplications` counts impulses that were really applied,
         // `LaunchLease`+`LaunchLeaseGeneration` remember WHICH capture received them (review R2: the game's
@@ -268,7 +269,12 @@ internal static class CorpseFeedback
     private static readonly LogTally _duplicateSkips = new();
     private static readonly LogTally _noisyPrunes = new();
     private static bool _gibUnavailableLogged;
-    private static void Log(string message) => Plugin.Instance?.Log.LogInfo("[CORPSE] " + message);
+    private static readonly RepeatedLogBudget _corpseLogBudget = new();
+    private static void WriteLog(string message) => Plugin.Instance?.Log.LogInfo("[CORPSE] " + message);
+    private static void Log(string message)
+    {
+        if (message.StartsWith("queue=reset;", StringComparison.Ordinal) || _corpseLogBudget.TryLog(message)) WriteLog(message);
+    }
     private static int NextSequence()
     {
         _nextSequence = _nextSequence == int.MaxValue ? 1 : _nextSequence + 1;
@@ -479,10 +485,9 @@ internal static class CorpseFeedback
                     item.Broken = true;
                     int broken = item.Enemy != null && FeedbackPolicy.ShouldBreakCorpseLimbs(item.OffSceneCleanupApplied, switches.DismemberActive) ? BreakLimbs(item) : 0;
                     string reason = item.OffSceneCleanupApplied ? "enemy-offscene-cleanup" : item.Enemy == null ? "enemy-null-fallback" : "attempted";
-                    // GibData absence is a KNOWN environment property, not a failure of this plugin: every enemy
-                    // family observed so far has a matched destruction setup with `entries=0`. So the per-corpse
-                    // line stays compact (and stops printing gibDataCalls=0;gibsCaptured=0 as if something broke),
-                    // and the situation is explained ONCE per level in `gibdata=unavailable`.
+                    // `entries=0` proves the MATCHED setup carries no gib data; it does not prove the prefab has no
+                    // CD_GibData at all, and only the component count can tell those two defects apart. The
+                    // per-corpse line therefore stays compact, and the once-per-level line carries the probe.
                     if (item.GibDataCalls == 0 && item.Gibs.Count == 0)
                         Log($"dismemberment=complete;scheduleId={item.Sequence};enemyId={item.EnemyDataId};limbsBroken={broken};reason={reason};gibs=none;attemptBudget={FeedbackPolicy.Fragments(item.Strength)}");
                     else
@@ -490,7 +495,7 @@ internal static class CorpseFeedback
                     if (!_gibUnavailableLogged && item.GibDataCalls == 0 && item.Gibs.Count == 0 && broken > 0)
                     {
                         _gibUnavailableLogged = true;
-                        Log($"gibdata=unavailable;reason=matched-setup-has-no-gibdata;note=known-environment-no-GibData;effect=local-mesh-destruction+fx-only;budget=once-per-level");
+                        Log($"gibdata=unavailable;reason=matched-setup-has-no-gibdata;note=gib-source-unlocated;gibComponents={CountGibDataComponents(item)};effect=local-mesh-destruction+fx-only;budget=once-per-level");
                     }
                 }
                 if (!item.Exploded && age >= item.BurstAt)
@@ -528,6 +533,19 @@ internal static class CorpseFeedback
                     TryLeaseModel(item);
                     Hidden[item.Identity] = item;
                 }
+                // Prepare only visible, releasable corpses; never replay an already-hidden renderer.
+                if (item.Exploded && item.Fade.CanPrepare(age, item.EndAt)
+                    && FeedbackPolicy.ShouldHideCorpse(item.LaunchApplications, item.RagdollInactive)
+                    && (!switches.LaunchActive || item.LaunchApplications > 0 || item.LaunchClosed))
+                {
+                    bool prepared = CorpseFadePrep.Attempt(() => FadeRenderer(item), fadeTarget =>
+                    {
+                        item.Fade.Observe(age, CorpseFade.TryBegin(fadeTarget as Renderer, item.OffSceneCleanupApplied,
+                            DeathLedger.InLevel, item.Sequence, NativeDecay(item), deferTransient: true));
+                        return true;
+                    }, Warn);
+                    if (!prepared) item.Fade.Observe(age, CorpseFadeAttempt.Finished);
+                }
                 if (age >= item.EndAt)
                 {
                     ReleaseGibs(item);
@@ -536,7 +554,8 @@ internal static class CorpseFeedback
                     CloseLaunch(item, age);
                     // B + R2/R3 (2nd review): ONE fact decides the whole release (FeedbackPolicy.ShouldHideCorpse):
                     // a corpse whose ragdoll never activated keeps the game's own presentation (no fade/hide/recycle).
-                    bool releaseVisual = FeedbackPolicy.ShouldHideCorpse(item.LaunchApplications, item.RagdollInactive);
+                    // Once native Play succeeded, a hot-reloaded launch switch cannot undo that visual commitment.
+                    bool releaseVisual = FeedbackPolicy.ShouldHideCorpse(item.LaunchApplications, item.RagdollInactive) || item.Fade.Started;
                     if (releaseVisual)
                     {
                         // Optional native dissolve, started before Hide so the clone keeps the corpse's last pose.
@@ -545,7 +564,7 @@ internal static class CorpseFeedback
                             () => FadeRenderer(item),
                             fadeTarget =>
                             {
-                                CorpseFade.TryBegin(fadeTarget as Renderer, item.OffSceneCleanupApplied, DeathLedger.InLevel, item.Sequence, NativeDecay(item));
+                                if (!item.Fade.Resolved) item.Fade.Observe(age, CorpseFade.TryBegin(fadeTarget as Renderer, item.OffSceneCleanupApplied, DeathLedger.InLevel, item.Sequence, NativeDecay(item)));
                                 return true;
                             },
                             Warn);
@@ -600,7 +619,9 @@ internal static class CorpseFeedback
     }
     private static AudioClip LoadExplosionSound()
     {
-        if (_customExplosionLoadAttempted) return _customExplosionClip;
+        if (_customExplosionClip != null) return _customExplosionClip;
+        if (!CorpseAudioCachePolicy.ShouldAttempt(_customExplosionLoadAttempted, !ReferenceEquals(_customExplosionClip, null))) return null;
+        _customExplosionClip = null;
         _customExplosionLoadAttempted = true;
         try
         {
@@ -672,12 +693,12 @@ internal static class CorpseFeedback
     //   4. GetComponentsInChildren<Rigidbody>(true)         (last resort, never the living model root)
     // The first accepted lease is cached for the rest of the corpse, so one kill resolves at most once.
     private static void CaptureRagdoll(Corpse item, EnemyAgent enemy) => ResolveRagdoll(item, enemy, true);
-    private static void TryLateRagdoll(Corpse item) => ResolveRagdoll(item, item.Enemy, false);
-    private static void ResolveRagdoll(Corpse item, EnemyAgent enemy, bool atDeath)
+    private static void TryLateRagdoll(Corpse item, bool retryInactive = false) => ResolveRagdoll(item, item.Enemy, false, retryInactive);
+    private static void ResolveRagdoll(Corpse item, EnemyAgent enemy, bool atDeath, bool retryInactive = false)
     {
-        // A lease that lost its bodies is not a ragdoll: 1.2.16 returned here on `Ragdoll != null` alone, so a
-        // corpse whose captured object had been emptied by the game never looked again (19 silent corpses).
-        if (item.Ragdoll != null && item.Ragdoll.BodyCount > 0) return;
+        var previous = item.Ragdoll;
+        bool haveUsableLease = previous != null && previous.BodyCount > 0;
+        if (!FeedbackPolicy.ShouldResolveRagdoll(haveUsableLease, haveUsableLease && LeaseLive(item), retryInactive)) return;
         string failure = "no-ragdoll-instance";
         bool searched = false;
         try
@@ -703,11 +724,9 @@ internal static class CorpseFeedback
                 // model/enemy root ITSELF, an unreadable reference, and a lease that carries no rigidbody.
                 bool instanceIsRoot = instance != null && IsExactLivingRoot(instance, item);
                 var verdict = FeedbackPolicy.ClassifyRagdollInstance(instance != null, instanceIsRoot, instanceUnreadable);
-                if (FeedbackPolicy.AcceptRagdollInstance(verdict))
+                if (FeedbackPolicy.AcceptRagdollInstance(verdict) && CanCaptureRagdoll(item, instance))
                 {
                     if (AcceptRagdoll(item, instance, atDeath)) return;
-                    // The lease just measured the instance for us: an empty one is a named refusal, and rungs 2-4
-                    // still get their chance (they are the only remaining source of a real ragdoll).
                     verdict = FeedbackPolicy.ClassifyRagdollBodies(verdict, item.RagdollSource == "capture-failed" ? -1 : 0);
                 }
                 if (instance != null && !FeedbackPolicy.AcceptRagdollInstance(verdict))
@@ -719,7 +738,7 @@ internal static class CorpseFeedback
                 if (root == null || (pass == 1 && item.ModelRoot == item.EnemyRoot)) continue;
                 searched = true;
                 SearchRagdollRoot(item, root, atDeath);
-                if (item.Ragdoll != null) return;
+                if (!ReferenceEquals(item.Ragdoll, previous)) return;
             }
             if (!searched) NoteRung(item, enemy == null ? "enemy-wrapper-and-hierarchy-gone" : "no-hierarchy");
         }
@@ -811,24 +830,44 @@ internal static class CorpseFeedback
     // One candidate -> one lease. A candidate without any rigidbody is rejected (and remembered as
     // `no-rigidbody`, so the next rung still runs but the log keeps the detail), an exception as
     // `capture-failed`.
-    private static bool AcceptRagdoll(Corpse item, GameObject host, bool atDeath)
+    private static bool CanCaptureRagdoll(Corpse item, GameObject host)
     {
         if (host == null) return false;
+        var previous = item.Ragdoll;
+        bool haveUsableLease = previous != null && previous.BodyCount > 0;
+        if (!haveUsableLease) return FeedbackPolicy.CanCaptureRagdollCandidate(false, false, false);
         try
         {
+            Transform candidate = host.transform, oldRoot = previous.transform;
+            bool overlapping = candidate == oldRoot || candidate.IsChildOf(oldRoot) || oldRoot.IsChildOf(candidate);
+            return FeedbackPolicy.CanCaptureRagdollCandidate(true, overlapping, host.activeInHierarchy);
+        }
+        catch (Exception error) { Warn(error); return false; }
+    }
+    private static bool AcceptRagdoll(Corpse item, GameObject host, bool atDeath)
+    {
+        if (!CanCaptureRagdoll(item, host)) return false;
+        try
+        {
+            var previous = item.Ragdoll;
             var lease = Lease(host);
             if (lease == null || lease.BodyCount <= 0)
             {
                 lease?.RestoreState();
-                if (item.RagdollSource != "capture-failed") item.RagdollSource = "no-rigidbody";
+                if (previous == null && item.RagdollSource != "capture-failed") item.RagdollSource = "no-rigidbody";
                 return false;
             }
+            try
+            {
+                if (previous != null && previous.Pointer != lease.Pointer
+                    && FeedbackPolicy.IsLeaseCurrent(item.RagdollGeneration, previous.Generation)
+                    && (item.Model == null || item.Model.Pointer != previous.Pointer)) previous.RestoreState();
+            }
+            catch (Exception error) { Warn(error); }
             item.Ragdoll = lease;
             item.RagdollGeneration = lease.Generation;
             item.LadderHit = item.Ladder;
             item.RagdollSource = (atDeath ? "ragdoll-at-death:" : "late-lookup:") + item.Ladder;
-            // R5 (2nd review): a NEW lease is a new activation question - the inactive/waited state belongs to the
-            // previous object and must never leak into this one's receipt.
             item.RagdollInactive = false;
             item.RagdollWaitStart = -1f;
             return true;
@@ -965,8 +1004,9 @@ internal static class CorpseFeedback
         {
             if (item.FirstLookupAge < 0f) item.FirstLookupAge = age;
             item.RagdollLookupAttempts++;
-            TryLateRagdoll(item);
-            if (item.Ragdoll != null)
+            CorpseVisualLease previous = item.Ragdoll;
+            TryLateRagdoll(item, inactiveLease);
+            if (item.Ragdoll != null && !ReferenceEquals(item.Ragdoll, previous))
                 Log($"ragdoll=late@attempts={item.RagdollLookupAttempts};scheduleId={item.Sequence};enemyId={item.EnemyDataId};firstLookupAge={FirstLookupAge(item)};ladder={LadderTried(item)};ladderHit={LadderHit(item)};age={age:0.00}s;note=coroutine-spawned-ragdoll");
             lease = LeaseState(item);
             // R1 (1.2.18): the schedule is time-paced, so this line also marks the cross-deadline probe.
@@ -1064,7 +1104,7 @@ internal static class CorpseFeedback
             for (int i = 0; i < renderers.Length; i++)
             {
                 var candidate = renderers[i];
-                if (candidate == null || !candidate.enabled) continue;
+                if (candidate == null || !candidate.enabled || !FadeRendererCast.HasDrawableMesh(candidate)) continue;
                 // 1.2.18 (fade root cause): these elements are `Renderer` wrappers, so `is SkinnedMeshRenderer` never
                 // matched and the "prefer the skinned renderer" rule had never once fired. Ask the native class.
                 if (FadeRendererCast.IsSkinned(candidate)) return candidate;
@@ -1148,6 +1188,14 @@ internal static class CorpseFeedback
         catch (Exception error) { Warn(error); }
         return FeedbackPolicy.SizeFactor(volume);
     }
+    // This is one observed hierarchy, not a proof about every enemy prefab.
+    private static string CountGibDataComponents(Corpse item)
+    {
+        Transform root = item.ModelRoot != null ? item.ModelRoot : item.EnemyRoot;
+        if (root == null) return "unknown-no-root";
+        try { return root.GetComponentsInChildren<CD_GibData>(true).Length.ToString(System.Globalization.CultureInfo.InvariantCulture); }
+        catch (Exception error) { Warn(error); return "unknown-read-error"; }
+    }
     private static int ActivateGibData(CD_CharacterDestructionCollider destruction, byte destructionId, Vector3 position, Vector3 force, int maxCalls, out bool setupMatched, out int setupMatches, out int dataEntries)
     {
         setupMatched = false;
@@ -1213,11 +1261,13 @@ internal static class CorpseFeedback
                             out bool setupMatched, out int setupMatches, out int dataEntries);
                         item.GibDataCalls += calls;
                         if (!setupMatched) item.GibDataSetupMisses++;
-                        Log($"gibdata=resolved;enemyId={item.Enemy.EnemyDataID};destructionId={data.m_destructionID};setupMatched={setupMatched};setupMatches={setupMatches};entries={dataEntries};activateCalls={calls}");
+                        if (_corpseLogBudget.TryLog("gibdata=resolved"))
+                            WriteLog($"gibdata=resolved;enemyId={item.Enemy.EnemyDataID};destructionId={data.m_destructionID};setupMatched={setupMatched};setupMatches={setupMatches};entries={dataEntries};activateCalls={calls}");
                     }
                     limb.DestroyLimb(data);
                     FX_Manager.PlayEffect(true, FX_GroupName.Impact_EnemyBody, impactPosition, Quaternion.identity, false);
-                    Log($"destruction=local;enemyId={item.Enemy.EnemyDataID};limb={i};destructionId={data.m_destructionID};meshDestroyed={meshDestroyed};setups={allowedSetups};gibs={item.Gibs.Count}");
+                    if (_corpseLogBudget.TryLog("destruction=local"))
+                        WriteLog($"destruction=local;enemyId={item.Enemy.EnemyDataID};limb={i};destructionId={data.m_destructionID};meshDestroyed={meshDestroyed};setups={allowedSetups};gibs={item.Gibs.Count}");
                     broken++;
                 }
             }
@@ -1370,6 +1420,7 @@ internal static class CorpseFeedback
     internal static void EnterLevel()
     {
         DeathLedger.EnterLevel();
+        if (_customExplosionClip == null) _customExplosionLoadAttempted = false;
         _outsideLevelSkipLogged = false;
     }
     internal static void Reset(string reason)
@@ -1384,6 +1435,9 @@ internal static class CorpseFeedback
         }
         Active.Clear(); Hidden.Clear(); ActiveIdentities.Clear(); GibOwners.Clear(); GibOrigins.Clear(); GibScales.Clear(); DeathLedger.Reset(); PruneKeys.Clear(); _deathPool = null; _fragmentOwner = null; _pruneAt = 0f; _outsideLevelSkipLogged = false;
         ExplosionSound.Reset(); _pendingSoundPosition = Vector3.zero;
+        if (_corpseLogBudget.Suppressed > 0)
+            WriteLog($"diagnostics=summary;seen={_corpseLogBudget.Seen};printed={_corpseLogBudget.Printed};suppressed={_corpseLogBudget.Suppressed};policy=first-3-and-every-100-per-event-and-reason");
+        _corpseLogBudget.Reset();
         _duplicateSkips.Reset(); _noisyPrunes.Reset(); _gibUnavailableLogged = false;
         CorpseFade.Reset();
     }

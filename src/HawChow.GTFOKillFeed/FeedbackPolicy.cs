@@ -196,6 +196,10 @@ internal static class FeedbackPolicy
     internal static bool IsRagdollLive(bool activeInHierarchy) => activeInHierarchy;
     // An empty lease is not "no ragdoll": the object we captured is gone, so the ladder has to run again.
     internal static bool ShouldReplaceRagdollLease(RagdollLease lease) => lease == RagdollLease.Empty;
+    internal static bool ShouldResolveRagdoll(bool haveUsableLease, bool leaseLive, bool retryInactive)
+        => !haveUsableLease || (retryInactive && !leaseLive);
+    internal static bool CanCaptureRagdollCandidate(bool haveUsableLease, bool overlappingHost, bool candidateLive)
+        => !haveUsableLease || (!overlappingHost && candidateLive);
     // ---- R3 (1.2.18): which search results may become a lease ---------------------------------------------
     // The 1.2.16 ladder accepted a RagdollScript whose `ragdolled` flag was FALSE (pass 0 explicitly matched
     // the non-ragdolled scripts) and an EnemyRagdollRef on nothing but a non-null lookup, and the raw-rung
@@ -1213,4 +1217,42 @@ internal sealed class LogTally
     internal static bool ShouldLog(int seen, int loud, int stride)
         => seen > 0 && (seen <= loud || (stride > 0 && seen % stride == 0));
     internal void Reset() { _counts.Clear(); Total = 0; }
+}
+
+// One allowance per event and reason keeps ordinary combat receipts bounded without hiding a new failure kind.
+internal sealed class RepeatedLogBudget
+{
+    private readonly LogTally _events = new();
+    private int _printed;
+    internal int Seen { get { lock (_events) return _events.Total; } }
+    internal int Printed { get { lock (_events) return _printed; } }
+    internal int Suppressed { get { lock (_events) return _events.Total - _printed; } }
+    internal bool TryLog(string message)
+    {
+        int end = message.IndexOf(';');
+        int at = message.IndexOf('@');
+        if (at >= 0 && (end < 0 || at < end)) end = at;
+        string key = end < 0 ? message : message.Substring(0, end);
+        int reasonAt = message.IndexOf(";reason=", StringComparison.Ordinal);
+        if (reasonAt < 0) reasonAt = message.IndexOf(";error=", StringComparison.Ordinal);
+        if (reasonAt >= 0)
+        {
+            int reasonEnd = message.IndexOf(';', reasonAt + 1);
+            key += reasonEnd < 0 ? message.Substring(reasonAt) : message.Substring(reasonAt, reasonEnd - reasonAt);
+        }
+        lock (_events)
+        {
+            if (!LogTally.ShouldLog(_events.Add(key), 3, 100)) return false;
+            _printed++;
+            return true;
+        }
+    }
+
+    internal void Reset() { lock (_events) { _events.Reset(); _printed = 0; } }
+}
+
+internal static class CorpseAudioCachePolicy
+{
+    // A destroyed Unity clip still has a managed reference; an earlier failed load does not.
+    internal static bool ShouldAttempt(bool attempted, bool hasCachedReference) => !attempted || hasCachedReference;
 }
