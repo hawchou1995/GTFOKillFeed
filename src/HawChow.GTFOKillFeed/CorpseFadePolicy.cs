@@ -20,7 +20,55 @@ internal enum CorpseFadePoolState
     Exhausted,   // the pool exists but freeInstanceCount == 0
     Ready        // at least one free instance: a borrow is legal
 }
+// 1.2.22 (Survival FX.3 black scene, 2026-11-20 17:45): the pooled path makes the native Decay CLONE a
+// dissolve copy of the corpse renderer it is armed with (Decay.CreateDecayRenderer -> a GameObject named
+// "<source>_DecayRenderer"). A source that already carries a render-registration component, that already
+// lives inside the game's own dissolve, or that is itself a dissolve copy therefore makes the clone
+// duplicate a registration whose lifetime KillFeed does not own - and the 17:45 session's active,
+// Renderer-less "*_DecayRenderer" entry then threw in ShadowEnemyRenderer.ShouldRender 822 times.
+// These are observed facts about the INPUT, so a dangerous source is simply never armed: the corpse keeps
+// the shipped instant hide at its existing deadline. Nothing is destroyed, no registry is rewritten.
+internal readonly struct CorpseFadeInput
+{
+    internal readonly bool DecayCopy;              // the source GameObject (or an ancestor) is a dissolve copy
+    internal readonly bool ShadowRegistered;       // the source GameObject itself carries the registration component
+    internal readonly bool DecayOwnerArmed;        // an ancestor already owns/plays a native Decay for this body
+    internal readonly bool ClonePresent;           // the body already holds a dissolve copy of itself
+    internal readonly bool ShadowRegisteredSubtree; // a registration lives on an (even inactive) child of the source
+    // 1.2.22 review #4: the bounded scan stopped before it had looked at every child/ancestor. That is NOT "nothing
+    // found": an unvisited node may be the very registration (or the armed owner) we refuse to clone. Truncated
+    // therefore means "cannot prove safe" and is a hazard of its own, so the candidate is skipped and the next one
+    // (or the shipped hide at the deadline) is used. A tree that was visited exactly to its last node is complete
+    // and never sets this flag.
+    internal readonly bool Truncated;
 
+    internal CorpseFadeInput(bool decayCopy, bool shadowRegistered, bool decayOwnerArmed, bool clonePresent,
+        bool shadowRegisteredSubtree, bool truncated = false)
+    {
+        DecayCopy = decayCopy;
+        ShadowRegistered = shadowRegistered;
+        DecayOwnerArmed = decayOwnerArmed;
+        ClonePresent = clonePresent;
+        ShadowRegisteredSubtree = shadowRegisteredSubtree;
+        Truncated = truncated;
+    }
+
+    internal static CorpseFadeInput Safe => new CorpseFadeInput(false, false, false, false, false);
+    internal static CorpseFadeInput Opaque => new CorpseFadeInput(true, true, true, true, true, true);   // unreadable -> refuse
+}
+
+// The first observed reason an input must never be cloned. Named, so the receipt can say which one fired.
+internal enum CorpseFadeHazard
+{
+    None,
+    DecayCopy,
+    ClonePresent,
+    ShadowRegistered,
+    ShadowRegisteredSubtree,
+    DecayOwnerArmed,
+    // The bounded scan ran out of depth or node budget while nodes were still unvisited: safety is unproven.
+    HierarchyUnproven
+}
 internal readonly struct CorpseFadePlan
 {
     internal readonly bool FadeEnabled;
@@ -33,9 +81,13 @@ internal readonly struct CorpseFadePlan
     internal readonly bool HaveRenderer;
     internal readonly bool OffScene;
     internal readonly int ActiveFades;
+    // 1.2.22: the observed hazard class of the object the pooled clone would be made from. Never consulted
+    // by the corpse-own component path (that one plays an already-armed component and clones nothing).
+    internal readonly CorpseFadeHazard Hazard;
 
     internal CorpseFadePlan(bool fadeEnabled, bool corpseEffects, bool inLevel, bool paused, bool playPatched,
-        bool prefabSafe, CorpseFadePoolState pool, bool haveRenderer, bool offScene, int activeFades)
+        bool prefabSafe, CorpseFadePoolState pool, bool haveRenderer, bool offScene, int activeFades,
+        CorpseFadeHazard hazard = CorpseFadeHazard.None)
     {
         FadeEnabled = fadeEnabled;
         CorpseEffects = corpseEffects;
@@ -47,6 +99,7 @@ internal readonly struct CorpseFadePlan
         HaveRenderer = haveRenderer;
         OffScene = offScene;
         ActiveFades = activeFades;
+        Hazard = hazard;
     }
 }
 
@@ -65,6 +118,10 @@ internal enum CorpseFadeSkip
     NoFreeInstance,
     NoRenderer,
     OffScene,
+    // 1.2.22: the object the pooled clone would be made from is dangerous (see CorpseFadeHazard). Named
+    // separately from every other refusal, because "we refused this input" is a different receipt than
+    // "the pool had nothing".
+    HazardousInput,
     ConcurrencyCap
 }
 
@@ -119,6 +176,10 @@ internal static class CorpseFadePolicy
         if (plan.Pool != CorpseFadePoolState.Ready) return CorpseFadeSkip.NoFreeInstance;
         if (!plan.HaveRenderer) return CorpseFadeSkip.NoRenderer;    // not every enemy model exposes a usable renderer
         if (plan.OffScene) return CorpseFadeSkip.OffScene;           // already recycled off-scene: nothing visible to dissolve
+        // 1.2.22: a clone of THIS object would duplicate a render registration whose lifetime we do not own
+        // (the 17:45 session's active, Renderer-less "*_DecayRenderer" entry). The corpse keeps the shipped
+        // instant hide at its existing deadline instead.
+        if (plan.Hazard != CorpseFadeHazard.None) return CorpseFadeSkip.HazardousInput;
         if (plan.ActiveFades >= MaxConcurrentFades) return CorpseFadeSkip.ConcurrencyCap;
         return CorpseFadeSkip.None;
     }
@@ -135,6 +196,7 @@ internal static class CorpseFadePolicy
         CorpseFadeSkip.PrefabUnsafe => true,
         CorpseFadeSkip.PoolMissing => true,
         CorpseFadeSkip.NoFreeInstance => true,
+        CorpseFadeSkip.HazardousInput => true,
         CorpseFadeSkip.ConcurrencyCap => true,
         _ => false
     };
@@ -149,6 +211,7 @@ internal static class CorpseFadePolicy
         CorpseFadeSkip.PrefabUnsafe => "prefab-unsafe",
         CorpseFadeSkip.PoolMissing => "pool-missing",
         CorpseFadeSkip.NoFreeInstance => "no-free-instance",
+        CorpseFadeSkip.HazardousInput => "hazardous-input",
         CorpseFadeSkip.NoRenderer => "no-renderer",
         CorpseFadeSkip.OffScene => "off-scene",
         CorpseFadeSkip.ConcurrencyCap => "concurrency-cap",
@@ -238,6 +301,71 @@ internal static class CorpseFadePolicy
     };
     internal static bool PrefabIsSafe(int stopAction, bool autoCleanup)
         => stopAction == StopActionDeactivate && autoCleanup;
+
+    // ---- 1.2.22: is the object the pooled clone would be made from safe to clone? ------------------
+    // The pooled path does not dissolve the corpse itself: it asks the native Decay to build a copy of the
+    // corpse renderer (<source>_DecayRenderer) and animates that copy. The copy therefore inherits whatever
+    // the source GameObject carries, and its teardown belongs to the native component - not to us. So an
+    // input that already has a render registration, already belongs to a dissolve, or already holds a copy
+    // is refused BEFORE the borrow: nothing is cloned, nothing has to be cleaned up, and the corpse falls
+    // through to the shipped instant hide at its own deadline.
+    // The order is the operator-facing order: "this is already a copy" beats "a copy already exists", which
+    // beats "this object is a registered shadow caster", which beats "the game already owns this dissolve".
+    // #4: an exhausted budget is last but is still a refusal - "we did not finish looking" is never "safe".
+    internal static CorpseFadeHazard Hazard(in CorpseFadeInput input)
+    {
+        if (input.DecayCopy) return CorpseFadeHazard.DecayCopy;
+        if (input.ClonePresent) return CorpseFadeHazard.ClonePresent;
+        if (input.ShadowRegistered) return CorpseFadeHazard.ShadowRegistered;
+        if (input.ShadowRegisteredSubtree) return CorpseFadeHazard.ShadowRegisteredSubtree;
+        if (input.DecayOwnerArmed) return CorpseFadeHazard.DecayOwnerArmed;
+        if (input.Truncated) return CorpseFadeHazard.HierarchyUnproven;
+        return CorpseFadeHazard.None;
+    }
+    internal static bool IsHazardous(in CorpseFadeInput input) => Hazard(input) != CorpseFadeHazard.None;
+    internal static string Reason(CorpseFadeHazard hazard) => hazard switch
+    {
+        CorpseFadeHazard.DecayCopy => "decay-copy",
+        CorpseFadeHazard.ClonePresent => "clone-already-present",
+        CorpseFadeHazard.ShadowRegistered => "shadow-registered",
+        CorpseFadeHazard.ShadowRegisteredSubtree => "shadow-registered-subtree",
+        CorpseFadeHazard.DecayOwnerArmed => "decay-owner-armed",
+        CorpseFadeHazard.HierarchyUnproven => "hierarchy-unproven",
+        _ => "none"
+    };
+
+
+    // ---- 1.2.22 review #4: bounded-scan budgets as pure decisions -------------------------------------
+    // The Unity walk (FadeRendererCast) uses exactly these verdicts, so a test can drive the budget semantics with
+    // synthetic trees instead of trusting a hand-counted loop.
+    internal const int ScanMaxDepth = 6;
+    internal const int ScanMaxNodes = 64;
+    internal const int AncestorMaxDepth = 8;
+    internal const int SiblingMaxScan = 32;
+
+    internal enum SubtreeStep
+    {
+        Visit,       // this node has children and the budgets still allow visiting them
+        Leaf,        // exactly finished: a node without children
+        Truncated    // children exist but depth or node budget is spent -> safety unproven
+    }
+
+    internal static SubtreeStep SubtreeVerdict(int depth, int children, int visited)
+    {
+        if (children <= 0) return SubtreeStep.Leaf;
+        if (depth >= ScanMaxDepth) return SubtreeStep.Truncated;
+        if (visited >= ScanMaxNodes) return SubtreeStep.Truncated;
+        return SubtreeStep.Visit;
+    }
+
+    // True only when the ancestor walk stopped on its budget while a parent was still left to inspect. A walk that
+    // reached the root, or one that already concluded with a found hazard, is complete.
+    internal static bool AncestryTruncated(bool concluded, bool parentRemaining)
+        => !concluded && parentRemaining;
+
+    // True only when the sibling scan did not look at every sibling.
+    internal static bool SiblingScanTruncated(int children, int scanned)
+        => children > scanned;
 }
 
 // Observed state of one borrowed native instance. Ownership is decided from this alone, never from

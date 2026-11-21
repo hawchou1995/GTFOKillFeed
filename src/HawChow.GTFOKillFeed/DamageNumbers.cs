@@ -14,13 +14,21 @@ internal static class DamageNumbers
         internal float At, Side;
         internal HitKind Kind;
         internal float Damage;
+        // 1.2.24: `Text` is the part that keeps the number's historical ink, `GreenText` the part this hit proved it
+        // triggered the stagger with (painted with the shared #78DCA0). A number that is entirely a trigger has an empty
+        // `Text`; a merged volley that mixes both shows `18 + 6`. `Trigger` is the trigger amount itself (a SUBSET of
+        // Damage, used only by the merged-volley bookkeeping).
         internal string Text;
+        internal string GreenText;
+        internal float Trigger;
         internal bool Preview;
         internal int FlySeed;
     }
     private static readonly List<Number> Active = new(FeedbackPolicy.MaxNumbers);
     private static int _sequence;
     private static GUIStyle _style;
+    // One reusable GUIContent for the width measurements of a split number (no per-frame garbage).
+    private static readonly GUIContent MeasureContent = new();
     private static readonly HexColorCache WeakspotColor = new();
     private static Color ResolveWeakspotColor()
     {
@@ -36,7 +44,9 @@ internal static class DamageNumbers
     // 1.2.19 review R3: this is now a thin Unity adapter - the route itself (classifier -> visibility gate -> volley
     // capture) is DamageNumberRouter.Decide, which is Unity-free and therefore asserted directly by the smoke suite.
     // Nothing here re-decides: it reads the live switches and clock, calls the shared decision and draws what it says.
-    internal static DamageNumberRoute Add(Vector3 world, float damage, HitKind kind, bool preview = false, uint gearCategoryId = 0, DamageOrigin origin = DamageOrigin.Other, ulong shooterLookup = 0UL)
+    // 1.2.24: `staggerDamage` is the part of THIS hit the game proved it staggered with (StaggerHitPolicy); it travels
+    // with the number into the volley so a merged number can keep the triggering subset apart from the rest.
+    internal static DamageNumberRoute Add(Vector3 world, float damage, HitKind kind, bool preview = false, uint gearCategoryId = 0, DamageOrigin origin = DamageOrigin.Other, ulong shooterLookup = 0UL, float staggerDamage = 0f)
     {
         bool masterEnabled = Plugin.ShowDamageNumbers != null && Plugin.ShowDamageNumbers.Value
             && Plugin.Enabled != null && Plugin.Enabled.Value;
@@ -55,21 +65,39 @@ internal static class DamageNumbers
             ShotgunDamageNumberCapture.VolleyState,
             ShotgunDamageNumberCapture.CurrentTarget,
             world.x, world.y, world.z, damage, kind,
-            Time.unscaledTime, frame);
+            Time.unscaledTime, frame, staggerDamage);
         if (decision.NeedsReport) ShotgunDamageNumberCapture.ReportRefusedPellet(decision.Capture, frame);
         if (decision.Route != DamageNumberRoute.Immediate) return decision.Route;
-        return AddImmediate(world, damage, kind, preview) ? DamageNumberRoute.Immediate : DamageNumberRoute.Dropped;
+        return AddImmediate(world, damage, kind, preview, staggerDamage) ? DamageNumberRoute.Immediate : DamageNumberRoute.Dropped;
     }
-    internal static void AddMergedShotgun(Vector3 world, float damage, HitKind kind)
-        => AddImmediate(world, damage, kind, false);
-    private static bool AddImmediate(Vector3 world, float damage, HitKind kind, bool preview)
+    internal static void AddMergedShotgun(Vector3 world, float damage, HitKind kind, float staggerDamage = 0f)
+        => AddImmediate(world, damage, kind, false, staggerDamage);
+    private static bool AddImmediate(Vector3 world, float damage, HitKind kind, bool preview, float staggerDamage)
     {
         if (Plugin.ShowDamageNumbers == null || !Plugin.ShowDamageNumbers.Value || !Plugin.Enabled.Value) return false;
         string text = FeedbackPolicy.DamageText(damage, kind);
         if (text.Length == 0 || !KillPolicy.IsFinite(world.x) || !KillPolicy.IsFinite(world.y) || !KillPolicy.IsFinite(world.z)) return false;
         while (Active.Count >= FeedbackPolicy.MaxNumbers) Active.RemoveAt(0);
         int sequence = _sequence++;
-        Active.Add(new Number { World = world, At = Time.unscaledTime, Side = FeedbackPolicy.NumberSide(sequence), Kind = kind, Text = text, Preview = preview, Damage = damage, FlySeed = sequence });
+        // One production call decides both texts: the whole number keeps its ink unless the game proved a stagger, and a
+        // proven trigger only ever moves the digits this hit dealt into the green part.
+        StaggerHitPolicy.DamageNumberParts parts = StaggerHitPolicy.Parts(damage, staggerDamage, kind);
+        string main = parts.Main;
+        string green = parts.Green;
+        if (main.Length == 0 && green.Length == 0) { main = text; green = string.Empty; }
+        Active.Add(new Number
+        {
+            World = world,
+            At = Time.unscaledTime,
+            Side = FeedbackPolicy.NumberSide(sequence),
+            Kind = kind,
+            Text = main,
+            GreenText = green,
+            Trigger = staggerDamage > 0f && staggerDamage <= damage ? staggerDamage : 0f,
+            Preview = preview,
+            Damage = damage,
+            FlySeed = sequence,
+        });
         return true;
     }
     internal static void Tick(float now)
@@ -79,6 +107,12 @@ internal static class DamageNumbers
         ShotgunDamageNumberCapture.Tick(now);
         float lifetime = Plugin.DamageNumberLifetime != null ? FeedbackPolicy.Clamp(Plugin.DamageNumberLifetime.Value, 0.35f, 1.2f, FeedbackPolicy.NumberLifetime) : FeedbackPolicy.NumberLifetime;
         for (int i = Active.Count - 1; i >= 0; i--) if (now - Active[i].At >= lifetime) Active.RemoveAt(i);
+    }
+    private static float Measure(string text)
+    {
+        if (string.IsNullOrEmpty(text) || _style == null) return 0f;
+        MeasureContent.text = text;
+        return _style.CalcSize(MeasureContent).x;
     }
     internal static void Draw()
     {
@@ -148,32 +182,15 @@ internal static class DamageNumbers
                 // eight pastel hues actually read as a foil edge at HUD sizes instead of a one-pixel fringe.
                 // Plain numbers (foil switched off, or below the threshold) keep the single dark/tier ring.
                 int rings = paint.Rings;
-                for (int ring = 0; ring < rings; ring++)
-                {
-                    float radius = ring == 0
-                        ? outline
-                        : DamageFxPolicy.FoilRimHaloRadius * resolution;
-                    float ringAlpha = ring == 0 ? DamageFxPolicy.FoilRimAlpha : DamageFxPolicy.FoilRimHaloAlpha;
-                    for (int direction = 0; direction < 8; direction++)
-                    {
-                        DamageFxPolicy.FoilDirection(direction, out int dx, out int dy);
-                        if (paint.Foil && (ring != 0 || paint.FoilRim))
-                        {
-                            DamageFxPolicy.FoilRimColor(direction, foilPhase, out float rimRed, out float rimGreen, out float rimBlue);
-                            GUI.color = new Color(rimRed, rimGreen, rimBlue, alpha * ringAlpha);
-                        }
-                        // A prismatic number still carries its tier: the inner ring keeps the tier colour
-                        // and only the halo, the emboss and the body are foil.
-                        else GUI.color = plainOutline;
-                        GUI.Label(new Rect(rect.x + dx * radius, rect.y + dy * radius, rect.width, rect.height), number.Text, _style);
-                    }
-                }
-                if (paint.Foil)
-                {
-                    DamageFxPolicy.FoilEmbossOffset(foilPhase, out float embossX, out float embossY);
-                    GUI.color = new Color(1f, 1f, 1f, alpha * DamageFxPolicy.FoilEmbossAlpha);
-                    GUI.Label(new Rect(rect.x + embossX * resolution, rect.y + embossY * resolution, rect.width, rect.height), number.Text, _style);
-                }
+                // 1.2.24 review R1: a number can be two texts. `Text` keeps the historical ink, `GreenText` is the part
+                // the game proved it staggered with. Both are measured once and laid out as ONE centred group with an
+                // explicit, resolution-scaled seam; the production helper then draws every pass per part over that part's
+                // own rect, so a split number keeps the anchor an unsplit one has and the rim is never stamped from the
+                // concatenated text (which is what made the two halves drift apart / touch).
+                string mainText = number.Text;
+                string greenText = number.GreenText;
+                bool hasMain = !string.IsNullOrEmpty(mainText);
+                bool hasGreen = !string.IsNullOrEmpty(greenText);
                 Color color;
                 if (paint.Foil)
                 {
@@ -187,23 +204,66 @@ internal static class DamageNumbers
                 else if (number.Kind == HitKind.Weakspot) color = ResolveWeakspotColor();
                 else if (number.Kind == HitKind.Armor) color = new Color(0.65f, 0.72f, 0.77f);
                 else color = KillHud.Ink;
-                GUI.color = new Color(color.r, color.g, color.b, FeedbackPolicy.NumberTextAlpha(color.a, alpha));
-                GUI.Label(rect, number.Text, _style);
-                // Weight above 1 stamps the body again on a small circle: the stroke itself gets thicker
-                // instead of only its shadow, and weight 1 adds nothing (the shipped look is unchanged).
-                int thicken = FeedbackPolicy.NumberThickenPasses(weight);
-                if (thicken > 0)
-                {
-                    float thickenRadius = FeedbackPolicy.NumberThickenRadius(weight) * resolution;
-                    for (int stamp = 0; stamp < thicken; stamp++)
-                    {
-                        float angle = (stamp / (float)thicken) * Mathf.PI * 2f;
-                        GUI.Label(new Rect(rect.x + Mathf.Cos(angle) * thickenRadius, rect.y + Mathf.Sin(angle) * thickenRadius, rect.width, rect.height), number.Text, _style);
-                    }
-                }
+                // The body ink this number would have had WITHOUT the stagger proof, with the alpha it is really drawn at:
+                // the configured colour alpha applied exactly once, so a six-digit colour behaves exactly as before.
+                Color bodyInk = new Color(color.r, color.g, color.b, FeedbackPolicy.NumberTextAlpha(color.a, alpha));
+                // 1.2.24 review R1: every label this number submits - rim ring(s) x 8 directions, foil emboss, the two body
+                // passes and the weight>1 thicken stamps - is ONE production call with an explicit RGBA per pass
+                // (DamageNumberPaint.Emit). Nothing here mutates GUI.color while laying the passes out, so a stamp can no
+                // longer inherit the green of the pass before it (that was what painted the normal digits of a split number
+                // green at FontWeight>1), and the green body repeats the number's own effective alpha instead of 1f.
+                // The ONE shared stagger green (#78DCA0, the same triple the focused-enemy row uses) replaces only the BODY
+                // of the digits this hit proved it staggered with - never a rim, a tier outline, the halo or the emboss.
+                DamageNumberPaint.Plan plan = default;
+                plan.GroupX = rect.x;
+                plan.GroupY = rect.y;
+                plan.GroupWidth = rect.width;
+                plan.GroupHeight = rect.height;
+                plan.MainText = hasMain ? mainText : null;
+                plan.GreenText = hasGreen ? greenText : null;
+                plan.MainWidth = hasMain ? Measure(mainText) : 0f;
+                plan.GreenWidth = hasGreen ? Measure(greenText) : 0f;
+                plan.SplitGap = DamageNumberPaint.SplitGap(resolution);
+                plan.Foil = paint.Foil;
+                plan.FoilRim = paint.FoilRim;
+                plan.Rings = rings;
+                plan.OutlineRadius = outline;
+                plan.HaloRadius = DamageFxPolicy.FoilRimHaloRadius * resolution;
+                plan.RimAlpha = DamageFxPolicy.FoilRimAlpha;
+                plan.HaloAlpha = DamageFxPolicy.FoilRimHaloAlpha;
+                plan.FoilPhase = foilPhase;
+                plan.PlainRed = plainOutline.r;
+                plan.PlainGreen = plainOutline.g;
+                plan.PlainBlue = plainOutline.b;
+                plan.PlainAlpha = plainOutline.a;
+                plan.Alpha = alpha;
+                plan.BodyRed = bodyInk.r;
+                plan.BodyGreen = bodyInk.g;
+                plan.BodyBlue = bodyInk.b;
+                plan.BodyAlpha = bodyInk.a;
+                // The green body takes the SAME effective alpha again (never an opaque 1f), so a weakspot colour that
+                // carries alpha<1 and a globally half-transparent number keep the alpha they already had.
+                plan.TriggerAlpha = FeedbackPolicy.NumberTextAlpha(color.a, alpha);
+                StaggerHitPolicy.TriggerInk(out plan.TriggerRed, out plan.TriggerGreen, out plan.TriggerBlue);
+                DamageFxPolicy.FoilEmbossOffset(foilPhase, out float embossX, out float embossY);
+                plan.EmbossX = embossX * resolution;
+                plan.EmbossY = embossY * resolution;
+                plan.EmbossAlpha = DamageFxPolicy.FoilEmbossAlpha;
+                plan.ThickenPasses = FeedbackPolicy.NumberThickenPasses(weight);
+                plan.ThickenRadius = FeedbackPolicy.NumberThickenRadius(weight) * resolution;
+                DamageNumberPaint.Emit(in plan, SubmitPass);
             }
         }
         finally { GUI.color = previous; }
+    }
+
+    // The one place a damage-number label reaches Unity. The pass carries its own RGBA, so no pass can inherit the
+    // colour of the pass before it - the 1.2.24 review found exactly that: at FontWeight>1 the weight stamps of the
+    // normal digits were drawn with the stagger green the previous pass left in GUI.color.
+    private static void SubmitPass(in DamageNumberPaint.Pass pass)
+    {
+        GUI.color = new Color(pass.Red, pass.Green, pass.Blue, pass.Alpha);
+        GUI.Label(new Rect(pass.X, pass.Y, pass.Width, pass.Height), pass.Text, _style);
     }
     internal static void Preview()
     {

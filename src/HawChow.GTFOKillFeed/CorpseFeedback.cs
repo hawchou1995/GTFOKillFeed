@@ -1088,11 +1088,46 @@ internal static class CorpseFeedback
     // A renderer for the optional dissolve: the ragdoll's when we have one, then the model's, and finally any
     // live renderer in the snapshotted hierarchy. That last step is what a corpse WITHOUT a ragdoll needs -
     // 1.2.16 could only answer "no-renderer" for those, which is why it never dissolved them.
+    // 1.2.22 review: pick the first renderer of THIS corpse that is both drawable and safe to clone. The primary
+    // candidate keeps its priority, but when it is unsafe (a shadow-registered body, an existing dissolve copy, a
+    // second dissolve on the same hierarchy) another live renderer of the SAME corpse is tried before giving up.
+    // When nothing is safe, the first drawable candidate is still returned so CorpseFade can print exactly one
+    // `hazardous-input` receipt and the corpse keeps the shipped instant hide at its deadline. Nothing is armed
+    // here and no old copy is ever reused.
     private static object FadeRenderer(Corpse item)
     {
-        Renderer renderer = item.Ragdoll?.PrimaryRenderer() ?? item.Model?.PrimaryRenderer();
-        if (renderer != null) return renderer;
-        return HierarchyRenderer(item.ModelRoot) ?? HierarchyRenderer(item.EnemyRoot);
+        Renderer firstDrawable = null;
+        if (TrySafeRenderer(item.Ragdoll?.PrimaryRenderer(), ref firstDrawable, out Renderer safe)) return safe;
+        if (TrySafeRenderer(item.Model?.PrimaryRenderer(), ref firstDrawable, out safe)) return safe;
+        if (TrySafeRenderer(HierarchyRenderer(item.ModelRoot), ref firstDrawable, out safe)) return safe;
+        if (TrySafeRenderer(HierarchyRenderer(item.EnemyRoot), ref firstDrawable, out safe)) return safe;
+        // The preferred renderer of a root is only one of its renderers: walk the rest so a safe second renderer can
+        // still dissolve this corpse instead of being refused because the first one was dangerous.
+        if (TrySafeInHierarchy(item.ModelRoot, ref firstDrawable, out safe)) return safe;
+        if (TrySafeInHierarchy(item.EnemyRoot, ref firstDrawable, out safe)) return safe;
+        return firstDrawable;
+    }
+    private static bool TrySafeRenderer(Renderer candidate, ref Renderer firstDrawable, out Renderer safe)
+    {
+        safe = null;
+        if (candidate == null || !FadeRendererCast.HasDrawableMesh(candidate)) return false;
+        if (firstDrawable == null) firstDrawable = candidate;
+        if (!CorpseFade.IsSafeInput(candidate)) return false;
+        safe = candidate;
+        return true;
+    }
+    private static bool TrySafeInHierarchy(Transform root, ref Renderer firstDrawable, out Renderer safe)
+    {
+        safe = null;
+        if (root == null) return false;
+        try
+        {
+            Renderer[] renderers = root.GetComponentsInChildren<Renderer>(true);
+            for (int i = 0; i < renderers.Length; i++)
+                if (TrySafeRenderer(renderers[i], ref firstDrawable, out safe)) return true;
+        }
+        catch (Exception error) { Warn(error); }
+        return false;
     }
     private static Renderer HierarchyRenderer(Transform root)
     {

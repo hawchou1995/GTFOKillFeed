@@ -67,6 +67,8 @@
 | 累计伤害档位 | `DamageFx/TiersEnabled` | true | `DamageNumbers/Enabled` | 只停白/银/金/钻上色，累计值照记 |
 | 飞行轨迹 | `DamageNumbers/ApproachEffect` | false | `DamageNumbers/Enabled` | 回到原始上飘轨迹 |
 
+硬直绿字没有单独的配置键。只对本机已确认触发非致死 Light/Heavy 硬直的正伤害正文换色；证据不足保留原色。合并霰弹内有部分弹丸触发时，同一数字容器分列普通与浅绿两段，二者之和仍是该枪伤害。关闭合并则按弹丸显示；关闭霰弹数字则两段都不画。硬直行开关不改变上述判定。
+
 ## 5. 敌人血条与焦点描边
 
 | 功能 | 键 | 默认 | 父功能 | 关闭后 |
@@ -74,6 +76,9 @@
 | 血条 | `EnemyBar/Enabled` | true | `General/Enabled` + F7 | 不画血条与标签 |
 | 焦点描边 | `EnemyBar/FocusOutlineEnabled` | true | `EnemyBar/Enabled` | 只停描边，条体与文字照旧 |
 | 名称 / 数值 / 弱点标签 | `EnemyBar/ShowName`、`EnemyBar/ShowNumbers`、`EnemyBar/ShowWeakspotPart` | true | `EnemyBar/Enabled` | 只停对应文字 |
+| 硬直行 | `EnemyBar/ShowStaggerLine` | true | `EnemyBar/Enabled` | 只隐藏硬直行，不影响名称、弱点、结沫标签或硬直绿字 |
+
+浅绿行按四肢、躯体分别显示可断部位的当前耐久与上限；普通硬直显示还差多少伤害才触发。无对应部位或数据不可读时显示 `—`，不填 0，也不把普通硬直值冒充部位耐久。隐藏名称时改为与血条左边对齐。
 
 ## 6. 倒地队友标记
 
@@ -97,8 +102,10 @@
 | 爆裂延迟 | `Corpse/ExplosionDelay` | 0.1 | `Corpse/Enabled` | 只改时机 |
 | 击飞距离预算/倍数 | `Corpse/MinLaunchDistance`、`Corpse/MaxLaunchDistance`、`Corpse/TravelScale` | 12 / 18 / 1 | `Corpse/Launch` | 关闭击飞时这些值不生效 |
 
+从 1.2.21 升级后，`Corpse/FadeEffect` 仍默认开启，但不保证每具尸体都播放淡出：筛选器拒绝阴影注册对象、已有淡出副本及无法判断的层级。使用尸体自带的 `Decay` 前还要检查其副本是否有效；没有安全路径就保留原清理行为，不改变全局渲染状态。
+
 资源回收不变量（`tests/KillFeed.Tests` 的 `gate.corpse.*` 用例逐条检查）：
-- `num3 >= item.EndAt` 的生命周期收尾块**不受任何子开关控制**：`ReleaseGibs`、`CorpseFade.TryBegin`、`Hide`、`RecyclePhysics` 一律照旧执行。
+- 到 `age >= item.EndAt` 时仍释放已登记的碎块；仅在应隐藏尸体或已成功开始淡出时走视觉收尾。未解决的淡出经 `CorpseFadePrep.Attempt` 的异常保护尝试，不以淡出成功作为队列清理条件。
 - `ReleaseGibs` 函数体内没有任何 `Chunks`/`switches` 判断；`Chunks` 只拦 `CaptureGib`（登记/初速/缩放）与 `LimitGibs`（限距）。
 - 关闭 `Corpse/Enabled` 仍走原有 `effects-disabled` 队列清理路径，不会留下悬挂队列项。
 
@@ -199,6 +206,7 @@ Bind 之后应用。两条迁移只写自己的新键，不改写对方的旧键
 | `EnemyBar/ScreenAnchorFraction` | BarPolicy.DefaultScreenAnchorFraction | `Plugin.cs` |
 | `EnemyBar/ShowName` | true | `Plugin.cs` |
 | `EnemyBar/ShowNumbers` | true | `Plugin.cs` |
+| `EnemyBar/ShowStaggerLine` | true | `Plugin.cs` |
 | `EnemyBar/ShowWeakspotPart` | true | `Plugin.cs` |
 | `EnemyBar/TrackColor` | "#161A1C" | `Plugin.cs` |
 | `EnemyBar/VerticalOffset` | BarPolicy.DefaultVerticalOffset | `Plugin.cs` |

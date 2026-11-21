@@ -345,4 +345,313 @@ internal static class BarPolicy
 
     internal static bool IsHeadMode(string anchor)
         => !string.Equals(anchor, "Screen", StringComparison.OrdinalIgnoreCase);
+
+    // ---- 1.2.22: the stagger (hitreact) readout under the focused-enemy bar --------------------------
+    // Fixed light green #78DCA0 (120/220/160). Deliberately NOT configurable and NOT shared with any other
+    // label: the weakspot tags keep their configured red and the C-Foam tag keeps its amber, so a glance can
+    // never confuse "how much damage until this enemy flinches" with "where the weakspot is".
+    internal const float StaggerTextRed = 120f / 255f;
+    internal const float StaggerTextGreen = 220f / 255f;
+    internal const float StaggerTextBlue = 160f / 255f;
+
+    // The ONE accessor of that green. EnemyBar (the row) and DamageNumbers (the digits a hit proved it staggered with,
+    // 1.2.24) both call this, so the HUD cannot grow a second, slightly different green - the compiled gate asserts
+    // that both call sites go through this method instead of writing their own triple.
+    internal static void StaggerInk(out float red, out float green, out float blue)
+    {
+        red = StaggerTextRed;
+        green = StaggerTextGreen;
+        blue = StaggerTextBlue;
+    }
+
+    // Two different questions, kept apart on purpose:
+    //   * limb destruction - the damage that still breaks ONE destructible limb, read from the live limb
+    //     (m_health) for the limbs the game itself treats as destroyable; a REMAINING amount, per limb;
+    //   * normal hitreact  - GameData.HealthData.DamageUntilHitreact minus the live accumulator
+    //     (Dam_EnemyDamageBase.m_damBuildToHitreact). This is the game's own formula, proven on the shipped binary:
+    //       Dam_EnemyDamageBase::ProcessReceivedDamage  RVA 0x137E570 (Il2CppDumper script.json)
+    //         0x137E639  mulss  xmm0, xmm10                ; damage * multiplier
+    //         0x137E63E  addss  xmm0, [rbx+0x150]          ; + m_damBuildToHitreact   (dump.cs: 0x150)
+    //         0x137E646  movss  [rbx+0x150], xmm0         ; accumulator = the sum
+    //         0x137E667  mov    rax, [rax+0x150]
+    //         0x137E677  mov    rax, [rax+0x40]           ; the block that owns HealthData
+    //         0x137E684  comiss xmm0, [rax+0x14]          ; accumulator vs DamageUntilHitreact (HealthData 0x14)
+    //         0x137E688  jae    0x137E693                 ; trigger when accumulator >= threshold
+    //         0x137E693  mov    [rbx+0x150], edi           ; edi == 0 (xor edi,edi @0x137E5CB): accumulator reset
+    //     So the data field is an ABSOLUTE damage budget in the same units as incoming damage - no ratio, no
+    //     HealthMax factor, no weapon-panel conversion - and the damage still needed is
+    //     max(0, threshold - m_damBuildToHitreact). The row therefore shows a computed REMAINING value, never a
+    //     guessed magnitude: only a readable, finite, strictly positive threshold plus a finite accumulator is
+    //     shown; anything else is the explicit no-data dash (never "immune", never a fabricated 0, never the
+    //     C-Foam sentinel).
+    internal readonly struct StaggerGroupValues
+    {
+        internal readonly bool HasValue;
+        internal readonly bool CapacityKnown;
+        internal readonly float CurrentMin;
+        internal readonly float CurrentMax;
+        internal readonly float CapacityMin;
+        internal readonly float CapacityMax;
+
+        internal StaggerGroupValues(bool hasValue, bool capacityKnown, float currentMin, float currentMax,
+            float capacityMin, float capacityMax)
+        {
+            HasValue = hasValue;
+            CapacityKnown = capacityKnown;
+            CurrentMin = currentMin;
+            CurrentMax = currentMax;
+            CapacityMin = capacityMin;
+            CapacityMax = capacityMax;
+        }
+
+        internal static StaggerGroupValues None => new StaggerGroupValues(false, false, 0f, 0f, 0f, 0f);
+    }
+
+    // Mutable builder used by the live read path. It only accepts a readable, strictly positive CURRENT durability;
+    // the fixed capacity (the game's own m_healthMax) is optional and is never substituted for the current value.
+    internal struct StaggerGroupBuilder
+    {
+        private bool _has;
+        private bool _capacityKnown;
+        private float _currentMin, _currentMax, _capacityMin, _capacityMax;
+
+        internal void Add(float current, float capacity)
+        {
+            if (!KillPolicy.IsFinite(current) || current <= 0f) return;
+            bool capReadable = KillPolicy.IsFinite(capacity) && capacity > 0f;
+            if (!_has)
+            {
+                _has = true;
+                _capacityKnown = capReadable;
+                _currentMin = current;
+                _currentMax = current;
+                _capacityMin = capReadable ? capacity : 0f;
+                _capacityMax = capReadable ? capacity : 0f;
+                return;
+            }
+            if (current < _currentMin) _currentMin = current;
+            if (current > _currentMax) _currentMax = current;
+            if (!capReadable) { _capacityKnown = false; return; }
+            if (!_capacityKnown) return;
+            if (capacity < _capacityMin) _capacityMin = capacity;
+            if (capacity > _capacityMax) _capacityMax = capacity;
+        }
+
+        internal StaggerGroupValues Build()
+            => _has
+                ? new StaggerGroupValues(true, _capacityKnown, _currentMin, _currentMax, _capacityMin, _capacityMax)
+                : StaggerGroupValues.None;
+    }
+
+    internal readonly struct StaggerValues
+    {
+        internal readonly StaggerGroupValues Limbs;
+        internal readonly StaggerGroupValues Torso;
+        internal readonly bool HasNormal;
+        internal readonly float NormalRemaining;
+
+        internal StaggerValues(StaggerGroupValues limbs, StaggerGroupValues torso, bool hasNormal, float normalRemaining)
+        {
+            Limbs = limbs;
+            Torso = torso;
+            HasNormal = hasNormal;
+            NormalRemaining = normalRemaining;
+        }
+
+        internal static StaggerValues None => new StaggerValues(StaggerGroupValues.None, StaggerGroupValues.None, false, 0f);
+    }
+
+    // 1.2.23: the ANATOMICAL group. The source is CharacterDestruction.CD_BodypartType carried by the limb's own
+    // destruction collider (Dam_EnemyDamageLimb.m_destruction.m_bodyPart), verified against the installed
+    // Modules-ASM interop by scripts/Test-EnemyBarStaggerIl.ps1. It is deliberately NOT eLimbDamageType
+    // (Normal/Weakspot/Armor): that enum classifies armor/weakspot and can never name a body part.
+    internal enum StaggerBodyGroup { Unknown = 0, Limbs = 1, Torso = 2 }
+
+    internal const int PartUnspecified = 0;
+    internal const int PartHead = 1;
+    internal const int PartArmUpperRight = 2;
+    internal const int PartArmLowerRight = 3;
+    internal const int PartArmUpperLeft = 4;
+    internal const int PartArmLowerLeft = 5;
+    internal const int PartChest = 6;
+    internal const int PartStomach = 7;
+    internal const int PartHips = 8;
+    internal const int PartLegUpperRight = 9;
+    internal const int PartLegLowerRight = 10;
+    internal const int PartLegUpperLeft = 11;
+    internal const int PartLegLowerLeft = 12;
+
+    // Arms/hands (upper + lower arm) and legs/feet (upper + lower leg) are the two "limb" chains. Chest/stomach/
+    // hips are the only torso parts the shipped enum carries; it has no Back/Waist value at all, so those are not
+    // guessed from a name, index, magnitude or the separate BodyPartLocation model-location system. Head,
+    // Unspecified and every future/mod value stay Unknown and are never folded into either group.
+    internal static StaggerBodyGroup BodyGroup(int bodyPart)
+    {
+        switch (bodyPart)
+        {
+            case PartArmUpperRight:
+            case PartArmLowerRight:
+            case PartArmUpperLeft:
+            case PartArmLowerLeft:
+            case PartLegUpperRight:
+            case PartLegLowerRight:
+            case PartLegUpperLeft:
+            case PartLegLowerLeft:
+                return StaggerBodyGroup.Limbs;
+            case PartChest:
+            case PartStomach:
+            case PartHips:
+                return StaggerBodyGroup.Torso;
+            default:
+                return StaggerBodyGroup.Unknown;
+        }
+    }
+
+    internal const string NoStaggerValue = "—";
+
+    // Damage still required for ONE part, rounded UP: a part with 0.4 HP left needs one more point of damage,
+    // never "0". Only a finite, strictly positive value is rendered; everything else is the no-data dash.
+    internal static string RequiredDamage(float value)
+    {
+        if (!KillPolicy.IsFinite(value) || value <= 0f) return NoStaggerValue;
+        double rounded = Math.Ceiling(value);
+        return rounded >= 9999999d ? "9999999" : rounded.ToString(CultureInfo.InvariantCulture);
+    }
+
+    // The game's own normal-hitreact formula: remaining = max(0, threshold - accumulator). Both inputs must be
+    // readable and finite, and the threshold must be strictly positive; a spent budget is a real 0 (the next hit
+    // triggers the hitreact), which is different from "no data".
+    internal static bool StaggerRemaining(float threshold, float accumulated, out float remaining)
+    {
+        remaining = 0f;
+        if (!KillPolicy.IsFinite(threshold) || threshold <= 0f) return false;
+        if (!KillPolicy.IsFinite(accumulated) || accumulated < 0f) return false;
+        float left = threshold - accumulated;
+        remaining = left > 0f ? left : 0f;
+        return true;
+    }
+
+    // A live damage amount, never ceiling-rounded: up to three decimals with trailing zeros trimmed, so 0.5 stays
+    // 0.5 and 77.25 stays 77.25. No multiplier, no unit conversion.
+    internal static string DamageAmount(float value)
+    {
+        if (!KillPolicy.IsFinite(value) || value < 0f) return NoStaggerValue;
+        double rounded = Math.Round((double)value, 3, MidpointRounding.AwayFromZero);
+        if (rounded >= 9999999d) return "9999999";
+        string text = rounded.ToString("0.###", CultureInfo.InvariantCulture);
+        return text == "-0" ? "0" : text;
+    }
+
+    private static string DamageSpan(float min, float max)
+    {
+        if (!KillPolicy.IsFinite(min) || !KillPolicy.IsFinite(max)) return NoStaggerValue;
+        if (Math.Abs(max - min) < 0.01f) return RequiredDamage(min);
+        return RequiredDamage(min) + "-" + RequiredDamage(max);
+    }
+
+    // current/capacity is deliberate: the CURRENT durability is the damage the next break still needs, while the
+    // CAPACITY is the fixed maximum the game gave that part. Showing both means 15 (current) and 40 (capacity)
+    // can never be mistaken for one another. A group with no live part is the explicit dash; an unreadable
+    // capacity keeps the current value and dashes only the capacity side.
+    internal static string GroupValue(StaggerGroupValues group)
+    {
+        if (!group.HasValue) return NoStaggerValue;
+        string current = DamageSpan(group.CurrentMin, group.CurrentMax);
+        string capacity = group.CapacityKnown ? DamageSpan(group.CapacityMin, group.CapacityMax) : NoStaggerValue;
+        return current + "/" + capacity;
+    }
+
+    internal static void StaggerTokens(StaggerValues values, string language, out string limbs, out string torso, out string normal)
+    {
+        bool chinese = KillPolicy.IsChinese(language);
+        string limbValue = GroupValue(values.Limbs);
+        string torsoValue = GroupValue(values.Torso);
+        string normalValue = values.HasNormal ? DamageAmount(values.NormalRemaining) : NoStaggerValue;
+        limbs = chinese ? "[四肢：" + limbValue + "]" : "[Limb " + limbValue + "]";
+        torso = chinese ? "[躯体：" + torsoValue + "]" : "[Torso " + torsoValue + "]";
+        normal = chinese ? "[普通(剩余)：" + normalValue + "]" : "[Hitreact(left) " + normalValue + "]";
+    }
+
+    internal static string StaggerLine(StaggerValues values, string language)
+    {
+        StaggerTokens(values, language, out string limbs, out string torso, out string normal);
+        return limbs + torso + normal;
+    }
+
+    // ---- 1.2.23: shared text origin and left-anchored row layout ------------------------------------
+    // The row must start where the monster name's FIRST GLYPH really starts, which is the name rect origin plus the
+    // style's padding and content offset after alignment - not the centre of a centred rect and not a measured text
+    // width. The same helper is used for the name and the row, so the two cannot drift apart.
+    internal const int TextAlignLeft = 0;
+    internal const int TextAlignCenter = 1;
+    internal const int TextAlignRight = 2;
+
+    internal static float TextOriginX(float rectX, float rectWidth, float contentWidth,
+        float paddingLeft, float paddingRight, float contentOffsetX, int alignment)
+    {
+        if (!KillPolicy.IsFinite(rectX)) rectX = 0f;
+        if (!KillPolicy.IsFinite(rectWidth) || rectWidth < 0f) rectWidth = 0f;
+        if (!KillPolicy.IsFinite(contentWidth) || contentWidth < 0f) contentWidth = 0f;
+        float leftPad = KillPolicy.IsFinite(paddingLeft) && paddingLeft > 0f ? paddingLeft : 0f;
+        float rightPad = KillPolicy.IsFinite(paddingRight) && paddingRight > 0f ? paddingRight : 0f;
+        float offset = KillPolicy.IsFinite(contentOffsetX) ? contentOffsetX : 0f;
+        float inner = rectWidth - leftPad - rightPad;
+        if (inner < 0f) inner = 0f;
+        float left = rectX + leftPad + offset;
+        if (alignment == TextAlignCenter) return left + Math.Max(0f, (inner - contentWidth) * 0.5f);
+        if (alignment == TextAlignRight) return left + inner - contentWidth;
+        return left;
+    }
+
+    internal static int StaggerFontPixels(float configured, int screenHeight)
+    {
+        float size = NumberSize(configured, screenHeight);
+        int pixels = (int)Math.Round(size, MidpointRounding.AwayFromZero);
+        int minPixels = StaggerMinFontPixels(screenHeight);
+        return pixels < minPixels ? minPixels : pixels;
+    }
+
+    internal static int StaggerMinFontPixels(int screenHeight)
+        => Math.Max(7, (int)Math.Round(8f * ResolutionScale(screenHeight), MidpointRounding.AwayFromZero));
+
+    internal static float StaggerRowMargin(int screenHeight) => 6f * ResolutionScale(screenHeight);
+
+    // Width still available to the right of the aligned first glyph. A bar/name left of the margin is treated as
+    // the margin (the row is clamped there), never as extra room that runs off-screen.
+    internal static float StaggerAvailableWidth(float left, int screenWidth, int screenHeight)
+    {
+        if (screenWidth <= 0) return 0f;
+        float margin = StaggerRowMargin(screenHeight);
+        float start = KillPolicy.IsFinite(left) ? Math.Max(left, margin) : margin;
+        return Math.Max(0f, screenWidth - margin - start);
+    }
+
+    // One line when the whole row fits, two when limbs+torso and the normal slot fit separately, otherwise three.
+    // A row is never dropped merely because it is wide: it is scaled first and wrapped here, so no value silently
+    // disappears on a narrow screen.
+    internal static int StaggerRows(float available, float fullWidth, float limbsAndTorsoWidth, float widestTokenWidth)
+    {
+        if (!KillPolicy.IsFinite(available) || available <= 0f) return 3;
+        if (KillPolicy.IsFinite(fullWidth) && fullWidth <= available) return 1;
+        if (KillPolicy.IsFinite(limbsAndTorsoWidth) && limbsAndTorsoWidth <= available &&
+            KillPolicy.IsFinite(widestTokenWidth) && widestTokenWidth <= available) return 2;
+        return 3;
+    }
+
+    // Left anchor first, then clamp inside the screen margins. It never centres the row: 960 stays 960 on a 1920
+    // screen instead of becoming 860 for a 200 px row.
+    internal static float StaggerRowLeft(float desiredLeft, float width, int screenWidth, int screenHeight)
+    {
+        float margin = StaggerRowMargin(screenHeight);
+        float w = KillPolicy.IsFinite(width) && width > 0f ? width : 0f;
+        float max = screenWidth - margin - w;
+        if (max < margin) return margin;
+        float x = KillPolicy.IsFinite(desiredLeft) ? desiredLeft : margin;
+        if (x < margin) return margin;
+        if (x > max) return max;
+        return x;
+    }
+
+    // The row hangs directly under the bar; the caller still owns the final on-screen check.
+    internal static float StaggerRowY(float barBottom, int screenHeight) => barBottom + 2f * ResolutionScale(screenHeight);
 }

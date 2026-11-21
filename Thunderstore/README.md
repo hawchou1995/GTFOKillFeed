@@ -1,12 +1,17 @@
-# KillFeed 1.2.21
-
+# KillFeed 1.2.24
 独立的 GTFO 客户端反馈插件，需要 BepInEx，并以前置依赖 DamageSync 实现联机敌人血条。
 
-1.2.21 修复了原生血条下击杀计数不显示的问题：旧版只认 GetWorldCamera，但本机 HUD 由手动 CellUI 画布渲染。新实现核对所属层级、相机裁剪层、完整 viewport 与窗口像素尺寸后读取锚点，既不移动原生血条，也不把 disabled 的按需渲染相机误判为不可用。新增生产 Tick/Draw 重放门禁和明确失败原因。2026-11-17 的 TOA Pure 实测已成功放置计数 HUD，三张图标资源可用并正常通关，作者反馈计数基本正常；本模组 426 行日志无 Warning/Error/Fatal。该场景的消融由 DBO 接管，KillFeed 按设计让位，不能据此证明无 DBO 环境的原生消融 NRE 已根治。
+## 尸体淡出与硬直提示
 
-## 血条击杀计数（1.2.20）
+`Corpse/FadeEffect` 开启时，KillFeed 只对能够安全绘制的尸体部件播放淡出。带阴影注册组件的部件和已有的衰减副本不会被复制；优先改用同一具尸体上的安全部件，找不到就按原清理时间隐藏。日志中 `hazardous-input` 表示主动跳过，不需要关闭全局阴影或改动相机设置。其他模组接管 `Decay.Play` 时，KillFeed 让位。
 
-本机玩家血条下方新增右端对齐的一行三档图标 + 完整累计数（Minor / Elite / Boss，0 也显示）。沿用本模组本机确认击杀、Ledger 去重与 `KillPresentation.Tier`，不是普通/弱点/护甲命中数；离开远征清零，F9 不增加真实计数。`KillCounter/Enabled` 默认 true，可独立热关闭显示，关闭或 F7 隐藏不影响累计；General 总开关关闭期间既有观测链不接收新击杀。1080p 基准图标 20px、数字 14px、组距 12px，无厚底板；随屏幕高度整行缩放，大数保留完整十进制。锚点只取原生血条全长与 HUD 相机，原生 HUD 隐藏/锚点不可读时不猜位置。**1.2.21 已获 TOA Pure 实机放置回执与作者反馈；未逐项核对本关全部累计值，下方旧截图也不展示本功能。**
+准星对准敌人时，`EnemyBar/ShowStaggerLine` 在敌人名称下方显示与首字左端对齐的浅绿提示。四肢和躯体分别显示可破坏部位的当前耐久/上限；同组数值不同显示范围，没有可读部位显示 `—`。普通硬直单列，表示 `DamageUntilHitreact` 减去已经积累的硬直量，不是躯体耐久或敌人血量。
+
+伤害数字只有在 `OnTakeDamage` 等游戏读数能确认本次本机命中触发轻/重硬直时才变浅绿（`#78DCA0`）；证据不足保留原色。合并霰弹中若仅部分弹丸触发，显示如 `12 + 6`，只有后面的 6 为绿色，总伤害仍是 18。弱点、护甲、棱彩、档位描边及透明度保留各自设置。可查 `[DN] stagger=` 日志判断本次是否满足着色条件。
+
+## 血条击杀计数
+
+本机玩家血条下方按 Minor / Elite / Boss 分别累计确认归属本机的击杀，远征结束后清零。`KillCounter/Enabled` 可独立关闭显示；F7 隐藏界面不影响累计，F9 预览不会增加真实击杀。
 
 ## 截图
 
@@ -221,15 +226,10 @@ KillFeed 没有任何与联机同步相关的配置项。早期**未发布的本
 
 ## 测试与验证边界
 
-- 1.2.20：新增计数 HUD、清理前有限消融预约与完整汇总。2026-11-17 日志复核确认 TOA Pure 使用旧 DLL 产生逐肢重复日志，DBO 1.5.0 的 Play 补丁已被检测并让位；Survival 的池化消融曾成功启动并达到并发上限。Test 仅到大厅。新版本 HUD 与预约效果未实机验证。
-- 1.1.4 版本于 2026-10-18 做过实机测试：Test profile 日志记录了九次使用自定义音频路径完成的尸爆，以及一次合并爆裂及其待播合并提示，作者确认可以听到播放。嵌入式音频与冷却边界修复见更新日志。
-- 实机确认（作者 Survival profile）：倒地队友头顶的「菜」标记、默认深红的弱点伤害数字，以及关闭 `Corpse/ExplosionFx` 后尸体仍照常击飞/断肢并以原生快速消融消失等视觉表现，均由作者在真实会话中确认。
-- 历史实机视觉（1.2.8 起）：作者在 Test profile 中实机确认手持胶枪显示橙色 `[结沫*2]`、普通武器显示红色 `[头3×]`，即上方两张截图。
-- 发布前离线验证（1.2.16 版本号下实跑，2026-11-11，含第二轮/第三轮审查修复）：`scripts/Verify.ps1` 通过——**1135** 条 kill-feed policy 断言（含 C1-C7 的击飞/夹取/碰撞/日志断言、I1/I7 的卡片-图标表驱动用例、1.2.16 的宽限重试断言（`RagdollLookupGrace=0.30`、重试/放弃互斥、60 fps 下 8 次尝试、单次 90 ms 卡顿不再关闭窗口），以及第三轮审查的 R1-R9 断言：单一冲量入口 `CanApplyLaunch`、729 条租约序列的冲量上限、租约身份「指针+generation」、EndAt 收口与 `CorpsePostBurstHold > RagdollLookupGrace`、`LaunchState` 自相矛盾、`ladder=` 值语义、`no-decay-component` 回执可达）、`CONFIG_SMOKE` 89 项、`GLUE_WIELD_WIRING`、`CORPSE_FADE_IL`（`LAUNCH=…singleGate(CanApplyLaunch:pointer&generation,max2)+closureInCloseLaunch(RemoveQueued|EndAt)…`，含阶梯顺序、`attempts`/`firstLookupAge` 日志串、单一冲量入口、EndAt 收口与「只有 `CorpseFade` 可驱动 `Decay`」的会话级断言）、`DAMAGE_NUMBER_OPACITY_IL`、`HIT_SOUND_PATCH_NAMES`/`HIT_SOUND_MUTE_IL`/`KILL_PRESENTATION_IL`、`HIT_MARKER_IL`、`KILL_ICON_IL`（`ANCHOR=frozen-at-credit` + 类型级「除 Push 外不得写 X/Y/Z」）全部 PASS，`Build-HitKillAudio.py --verify`（`AUDIO_VERIFY=PASS`）与 `Build-BfvIcons.py --check`（`BFV_ICONS=PASS;COUNT=7`）亦通过；程序集版本 `1.2.16.0`。新断言做过变异验证：把重试窗口改回 burst 绑定、把布娃娃阶梯顺序对调、把放弃判定换回 `ShouldWaitForRagdoll`、把冲量入口改回「无预算检查」、把租约身份改回仅比指针、让 `Restore` 保留 `Enemy`/`EnemyRoot`/`ModelRoot`、把 EndAt 收口去掉、让 `IsReportableNative` 重新依赖组件，以及把夹取半径下限、连续碰撞判定、卡片寿命延长与卡片/图标判定表分别改回旧行为，对应断言均按预期变红。
-- **仍未验证（请勿当成已通过）**：`launch=applied` 相对 `schedule=accepted` 的**真实比例**（本次修复把重试窗口与 burst 解耦并加了取物阶梯，但只有实机日志能证明协程迟生成的布娃娃真的被抓到——关注 `ragdoll=late@attempts=N` 与 `launch=applied` 的出现率）；头顶击杀图标冻结后的观感与飞行徽记效果；击飞预算反解后的实际落手/落点曲线是否与配置相符。另外仍未验证：`TeammateMark/HideDuringEMP=true` 的 EMP 隐藏模式未在真实 EMP 场景验证；与 DeadBodyOptimization 并存时是否真的走回退分支未实机观察；长时间多波次战斗后原生消融池的借出/归还未观测；远端玩家倒地状态同步未专项验证（多人主机与客户端下标记的插值延迟）；免疫敌人 `[结沫*免疫]` 的实机显示、帧时与 GC 性能。原版命中提示音的第三个事件名 `BULLETHITENEMYINDICATOR` 只存在于 `AK.BUSSES`，无法按事件 ID 解析（既有已知项）。静态侧已证明的是守恒条件、恰好一次归还与调用顺序，不能替代上述实机确认。
+Survival 的 FX.3 Overload 已在开启尸体淡出的情况下实测：记录到四次淡出开始，玩家未再看到黑屏，也未出现之前的阴影渲染异常栈。同局仍记录到一次原生 `Decay.InitializeInternal` 空引用，之后战斗继续；调用来源和对单具尸体的影响尚未确认。
 
-- 第二轮实机缺陷修复（同一 1.2.16）：投掷改为「布娃娃租约三态 + 首帧 0.02 s 施加 + 替换布娃娃时窗口内二次施加 + 任何移除前必收口」；消融改为驱动尸体自身 `Decay` 组件（不借池、不校验 target renderer、只接受 `StopAction.None` + `autoCleanup=true`）。**仍未验证**：实机是否真的出现 `launch=applied;…;application=#N;ladderHit=…`（否则至少是 `launch=unavailable;reason=…`），以及原生 Decay 路径是否被 `unsafe-decay-component` 挡下——该值来自敌人物件序列化数据，离线不可读。门禁侧 `ES_PATCHES=0` 是负向硬断言（绝不 patch 任何 `ES_*`）。
-- 第三轮代码审查修复（同一 1.2.16）：`TryLaunchOrAbandon` 的两处 `ApplyLaunch` 合并为**一个冲量入口**，统一由 `FeedbackPolicy.CanApplyLaunch` 判定（旧形态下迟查分支可绕过 `MaxLaunchApplications`，同一具尸体最多被推 8 次）；租约身份改为**指针 + generation**（游戏 `Capture()` 重取同一对象会自增 generation，旧的指针比较会永久吞掉第二次冲量却仍报 applied）；`Restore` 只为真实 `enemy-despawn` 保留待投尸体，且保留时丢弃 `Enemy`/`EnemyRoot`/`ModelRoot`/模型租约（对象池把同一个 `EnemyAgent` 交给下一个敌人生成，旧形态下断肢/关 renderer/kinematic/`Decay.Play` 可能作用到活体敌人），`enemy-setup` 一律收口；EndAt 分支与 `RemoveQueued` 共用 `CloseLaunch`（不再只靠 `EndAt(0.75 s) > 查询截止(0.30 s)` 的算术巧合）；`LogUnavailableLaunch` 置 `LaunchClosed`，`LaunchState` 收进 policy，不再出现 `launch=unavailable` 后紧跟 `launch=pending`；`fade=native-unavailable;reason=no-decay-component` 现在真的会打印；`Plugin.Unload` 复位 `KillTracker`（含尸体队列）。**仍未实机验证**，且门禁新增：单一冲量入口与其组成、EndAt 收口、全会话「只有 `CorpseFade` 可驱动 `Decay`」、`ladder=` 值语义、整 tick 收口测试改为驱动生产谓词。
+本局有硬直着色判定记录，但没有开启棱彩或伤害档位。混合霰弹的分段外观、棱彩与档位同时开启时的实机效果，以及长局的淡出池回收仍待复测。下方和上方的实机截图用于展示各自标注的功能，不是本次黑屏对照图。
+
 ## 致谢与反馈
 
 - 卡片呈现：Deep Rock Galactic 中的 Battlefield V Kill Feed 风格。

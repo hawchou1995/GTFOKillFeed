@@ -304,7 +304,7 @@ internal static class ShotgunDamageNumberCapture
         {
             MergedShotgunDamageNumber[] merged = scope.Batch.Drain();
             for (int i = 0; i < merged.Length; i++)
-                DamageNumbers.AddMergedShotgun(new Vector3(merged[i].X, merged[i].Y, merged[i].Z), merged[i].Damage, merged[i].Kind);
+                DamageNumbers.AddMergedShotgun(new Vector3(merged[i].X, merged[i].Y, merged[i].Z), merged[i].Damage, merged[i].Kind, merged[i].TriggerDamage);
             LogMerged(scope, merged, frames);
         }
         catch { }

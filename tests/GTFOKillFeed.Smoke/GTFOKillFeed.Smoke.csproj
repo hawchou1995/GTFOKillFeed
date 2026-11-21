@@ -11,6 +11,8 @@
     <Compile Include="..\..\src\HawChow.GTFOKillFeed\FeedbackPolicy.cs" Link="FeedbackPolicy.cs" />
     <Compile Include="..\..\src\HawChow.GTFOKillFeed\EnemyNames.cs" Link="EnemyNames.cs" />
     <Compile Include="..\..\src\HawChow.GTFOKillFeed\BarPolicy.cs" Link="BarPolicy.cs" />
+    <Compile Include="..\..\src\HawChow.GTFOKillFeed\StaggerHitPolicy.cs" Link="StaggerHitPolicy.cs" />
+    <Compile Include="..\..\src\HawChow.GTFOKillFeed\DamageNumberPaint.cs" Link="DamageNumberPaint.cs" />
     <Compile Include="..\..\src\HawChow.GTFOKillFeed\ConfigHotReloadGate.cs" Link="ConfigHotReloadGate.cs" />
     <Compile Include="..\..\src\HawChow.GTFOKillFeed\ShotgunDamageNumberBatch.cs" Link="ShotgunDamageNumberBatch.cs" />
     <Compile Include="..\..\src\HawChow.GTFOKillFeed\GlueGunWield.cs" Link="GlueGunWield.cs" />

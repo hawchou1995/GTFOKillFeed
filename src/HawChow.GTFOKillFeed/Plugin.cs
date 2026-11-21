@@ -56,7 +56,7 @@ public sealed class Plugin : BasePlugin
     internal static ConfigEntry<string> Language;
     internal static ConfigEntry<KeyCode> ToggleKey;
     internal static ConfigEntry<KeyCode> PreviewKey;
-    internal static ConfigEntry<bool> EnemyBarEnabled, EnemyBarShowName, EnemyBarShowNumbers, EnemyBarShowWeakspotPart, EnemyBarLogFocus;
+    internal static ConfigEntry<bool> EnemyBarEnabled, EnemyBarShowName, EnemyBarShowNumbers, EnemyBarShowWeakspotPart, EnemyBarLogFocus, EnemyBarShowStaggerLine;
     internal static ConfigEntry<float> EnemyBarMaxDistance, EnemyBarHeadOffset, EnemyBarScreenAnchor, EnemyBarVerticalOffset,
         EnemyBarMinScreenFraction, EnemyBarMaxScreenFraction, EnemyBarWidth, EnemyBarHeight, EnemyBarOpacity, EnemyBarNumberSize,
         EnemyBarYellowThresholdPercent, EnemyBarRedThresholdPercent;
@@ -120,6 +120,7 @@ public sealed class Plugin : BasePlugin
         EnemyBarYellowThresholdPercent = Config.Bind("EnemyBar", "YellowThresholdPercent", BarPolicy.DefaultYellowThresholdPercent, "生命百分比等于或低于该值时使用黄色填充，夹取 0–100。默认 66。保存即热重载。");
         EnemyBarRedThresholdPercent = Config.Bind("EnemyBar", "RedThresholdPercent", BarPolicy.DefaultRedThresholdPercent, "生命百分比等于或低于该值时使用红色填充，夹取 0 到黄色阈值之间。默认 33。保存即热重载。");
         EnemyBarShowWeakspotPart = Config.Bind("EnemyBar", "ShowWeakspotPart", true, "在血条上方显示每个已确认的弱点部位及其当前伤害倍率。默认 true；关闭 ShowName 时这些标签一并隐藏。保存即热重载。");
+        EnemyBarShowStaggerLine = Config.Bind("EnemyBar", "ShowStaggerLine", true, "在血条下方用固定浅绿 #78DCA0 显示硬直行：[四肢：当前/上限][躯体：当前/上限][普通(剩余)：剩余伤害]，并与怪物名称实际第一个字左端对齐（隐藏名称时对齐血条左边）。部位来自伤害肢体自己的解剖枚举 CD_BodypartType（m_destruction.m_bodyPart）：上/下臂、上/下腿 → 四肢，胸/腹/胯 → 躯体；头、Unspecified 与未知/模组值不并入两组，绝不按数值大小、数组下标、怪物名或 ID 猜。四肢/躯体显示该组活体部位当前耐久/固定上限（m_health/m_healthMax），组内不同显示范围；没有可断部位显示“—”，不用全身普通硬直冒充。普通 = DamageUntilHitreact − m_damBuildToHitreact（GameAssembly 0x137E570 已核实为绝对伤害阈值；不乘 HealthMax、不向上取整）；不可读显示“—”（不写免疫、不伪造 0）。窄屏先缩字号再按组换行并夹取，不无故隐藏；名称隐藏、Head/Screen、边缘、切怪与 F7 均保持。独立开关，默认 true，热重载，不影响名称/弱点/结沫颜色与不透明度。");
         EnemyBarNameColor = Config.Bind("EnemyBar", "NameColor", "#E8ECEB", "敌人名称文字颜色，格式 #RRGGBB 或 #RRGGBBAA。默认 #E8ECEB，非法值回落默认。保存即热重载。");
         EnemyBarWeakspotColor = Config.Bind("EnemyBar", "WeakspotColor", "#EF4C4C", "弱点部位文字颜色，格式 #RRGGBB 或 #RRGGBBAA。默认红色 #EF4C4C，非法值回落默认。保存即热重载。");
         EnemyBarHealthTextColor = Config.Bind("EnemyBar", "HealthTextColor", "#E8ECEB", "血量数值文字颜色，格式 #RRGGBB 或 #RRGGBBAA。默认 #E8ECEB，非法值回落默认。保存即热重载。");

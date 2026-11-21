@@ -34,7 +34,7 @@ into the test project.
   asserts that `HitMarkerHud.Submit` calls the pure `HitMarkerPolicy.AcceptsSubmission`
   gate (disabled channel or `HitMarkerKind.None` -> reject) before projection/queue work,
   and that the rejected path returns `false` immediately.
-- `GTFOKillFeed.Smoke` (authoring 1.2.21 suite, 1409 assertions) links the same policy sources
+- `GTFOKillFeed.Smoke` (1542 assertions in 1.2.24) links the same policy sources
   and embeds the shipped `KillFeed.Audio.*.wav`, `KillFeed.Icons.hitmark-*.png` and
   `KillFeed.EnemyNames.defaults.json`, so cue bytes, marker rasters and the name list are
   asserted against the files the plugin actually ships. It also carries `KillCounterTests`
@@ -42,6 +42,8 @@ into the test project.
   exactly one `Counters.Add(` call site and no F9-preview credit) and the 1.2.19/1.2.20
   shot-volley and corpse suites. Its host walks up to `src/GTFOKillFeed.csproj` and then reads
   source text from `src/HawChow.GTFOKillFeed`.
+  It also tests fade-input refusal, the stagger row, stagger attribution in a pellet batch,
+  and the production paint passes for partially green numbers.
 - `GTFOKillFeed.ConfigSmoke` (97 assertions) drives the real `BepInEx.Configuration.ConfigFile`
   through fresh-install, legacy-upgrade, partial-new-key and unreadable-file paths; it needs
   `GTFO_DIR`.
@@ -54,35 +56,10 @@ The SDK is pinned by the repository root `global.json` (6.0.428, `rollForward=la
 a host without a matching 6.0.x SDK fails with `A compatible .NET SDK was not found` instead
 of silently building different IL.
 
-Commands (from the repository root):
-
-```bash
-DOTNET=/path/to/dotnet
-GTFO_DIR=/path/to/Survival
-
-$DOTNET build src/GTFOKillFeed.csproj -c Release -p:GTFO_DIR="$GTFO_DIR" --configfile nuget.config
-$DOTNET build tests/KillFeed.Policy.Tests/KillFeed.Policy.Tests.csproj -c Release -p:GTFO_DIR="$GTFO_DIR"
-$DOTNET run -c Release --no-build --project tests/KillFeed.Policy.Tests/KillFeed.Policy.Tests.csproj
-$DOTNET build tests/KillFeed.Tests/KillFeed.Tests.csproj -c Release -p:GTFO_DIR="$GTFO_DIR"
-$DOTNET tests/KillFeed.Tests/bin/Release/net6.0/KillFeed.Tests.dll
-$DOTNET build tests/KillFeed.IlGuard/KillFeed.IlGuard.csproj -c Release -p:GTFO_DIR="$GTFO_DIR"
-$DOTNET tests/KillFeed.IlGuard/bin/Release/net6.0/KillFeed.IlGuard.dll src/bin/Release/GTFOKillFeed.dll
-$DOTNET build tests/GTFOKillFeed.Smoke/GTFOKillFeed.Smoke.csproj -c Release
-$DOTNET tests/GTFOKillFeed.Smoke/bin/Release/net6.0/GTFOKillFeed.Smoke.dll
-$DOTNET build tests/GTFOKillFeed.ConfigSmoke/GTFOKillFeed.ConfigSmoke.csproj -c Release -p:GTFO_DIR="$GTFO_DIR"
-$DOTNET tests/GTFOKillFeed.ConfigSmoke/bin/Release/net6.0/GTFOKillFeed.ConfigSmoke.dll
-$DOTNET build tests/GTFOKillFeed.HudReplay/GTFOKillFeed.HudReplay.csproj -c Release
-$DOTNET tests/GTFOKillFeed.HudReplay/bin/Release/net6.0/GTFOKillFeed.HudReplay.dll
-```
-
-Expected: policy tests print `RESULT pass=424 fail=0`, `KillFeed.Tests` prints
-`SUMMARY pass=407;fail=0`, the three authoring suites print `PASS: 1409 kill-feed policy
-assertions`, `CONFIG_SMOKE=PASS;ASSERTIONS=97` and
-`HUD_REPLAY=PASS;ASSERTIONS=20;PRODUCTION=Tick+Draw`, and the IL guard prints
-`ILGUARD failures=0`; all exit 0.
-The documentation gate is separate: `python tools/verify_docs.py` must print
-`DOCGATE RESULT gates=16 failures=0`, and `python tools/verify_docs.py --negative` must
-report that all 7 negative controls raised their expected gate.
+The [reproduction guide](../docs/REPRODUCE.md) lists the build commands, expected results
+for the five test suites and `KillFeed.IlGuard`, and invocations of the nine PowerShell IL
+checks against the same rebuilt DLL. Use a read-only `GTFO_DIR` and an external scratch
+directory. The older `verify_docs.py` checks belong to the historical 1.2.17 layout.
 
 Not executable here: Unity camera projection, live `EnemyAgent`/`Collider` lifetime,
 `FindObjectsOfType` results, GUI rendering, and in-game verification. The IL guard only

@@ -85,6 +85,153 @@ internal static class FadeRendererCast
         catch (Exception error) { CorpseFade.Warn(error); return false; }
     }
 
+    // ---- 1.2.22 (Survival FX.3 black scene): classify the object a pooled clone would be made from ------
+    // The pooled path does not dissolve the corpse itself - the native Decay builds a COPY of the corpse
+    // renderer's GameObject ("<name>_DecayRenderer") and animates the copy. The copy inherits the source
+    // GameObject's components and its teardown is the native component's, so a source that already carries a
+    // render registration (ShadowEnemyRenderer owns a static Instances list and registers on enable) or that
+    // already belongs to a dissolve must never be cloned: that is the duplicate whose leftover entry threw in
+    // ShadowEnemyRenderer.ShouldRender for 3.74 s in the 17:45 session. Nothing is assumed about WHO removed
+    // the renderer; an input that could produce such a copy is simply not used, and the corpse keeps the
+    // shipped instant hide at its own deadline. Read-only: no destroy, no registry write, no object created.
+    internal const string DecayCopySuffix = "_DecayRenderer";
+
+    internal static CorpseFadeInput Observe(Renderer renderer)
+    {
+        if (renderer == null) return CorpseFadeInput.Safe;                  // never captured: no clone either
+        try
+        {
+            if (renderer.Pointer == IntPtr.Zero) return CorpseFadeInput.Opaque;
+            GameObject source = renderer.gameObject;
+            if (source == null) return CorpseFadeInput.Opaque;              // Unity fake-null wrapper
+            Transform node = source.transform;
+            string ownName = source.name ?? string.Empty;
+            bool decayCopy = IsDecayCopy(ownName);
+            bool shadowRegistered = HasShadowRegistration(source);
+            // 1.2.22 review: whether the native copy is shallow (this GameObject) or deep (its children too) was
+            // not provable offline (the shipped global-metadata.dat is a 768-byte stub, so no method body can be
+            // bound to CreateDecayRenderer). The scan therefore covers BOTH readings: the source GameObject and
+            // its subtree, including inactive children. Conservative on purpose: it can only refuse more, and a
+            // refused corpse keeps the shipped instant hide.
+            bool clonePresent = false, truncated = false, shadowBelow = false;
+            int visited = 0;
+            ScanForRegistrations(node, 0, ref visited, ref shadowBelow, ref truncated, ref clonePresent);
+            // Ancestors: an armed/playing Decay above the source means the game already owns this dissolve. If the
+            // walk stops on its budget while a parent is still left, the owner is unknown -> unproven (review #4).
+            bool ownerArmed = false, concluded = false;
+            Transform ancestor = node;
+            for (int depth = 0; depth < CorpseFadePolicy.AncestorMaxDepth; depth++)
+            {
+                if (ancestor == null) break;
+                // A dissolve copy anywhere above the source means the source belongs to that copy's hierarchy.
+                if (depth > 0 && IsDecayCopy(ancestor.name)) { decayCopy = true; concluded = true; break; }
+                if (OwnsDissolve(ancestor)) { ownerArmed = true; concluded = true; break; }
+                ancestor = ancestor.parent;
+            }
+            if (CorpseFadePolicy.AncestryTruncated(concluded, ancestor != null)) truncated = true;
+            // An existing copy of THIS object (the native clone keeps the source's name and adds the suffix).
+            Transform parent = node.parent;
+            if (parent != null)
+            {
+                int children = 0, scanned = 0;
+                bool readable = true;
+                try { children = parent.childCount; }
+                catch (Exception error) { CorpseFade.Warn(error); readable = false; truncated = true; }
+                string expected = ownName + DecayCopySuffix;
+                for (int i = 0; readable && i < children && i < CorpseFadePolicy.SiblingMaxScan; i++)
+                {
+                    scanned++;
+                    Transform sibling;
+                    try { sibling = parent.GetChild(i); }
+                    catch (Exception error) { CorpseFade.Warn(error); truncated = true; continue; }
+                    if (sibling == null || sibling == node) continue;
+                    if (string.Equals(sibling.name, expected, StringComparison.Ordinal)) { clonePresent = true; break; }
+                }
+                if (!clonePresent && CorpseFadePolicy.SiblingScanTruncated(children, scanned)) truncated = true;
+            }
+            return new CorpseFadeInput(decayCopy, shadowRegistered, ownerArmed, clonePresent, shadowBelow, truncated);
+        }
+        catch (Exception error)
+        {
+            // Fail closed: an input that cannot be classified is never cloned.
+            CorpseFade.Warn(error);
+            return CorpseFadeInput.Opaque;
+        }
+    }
+
+    private static bool IsDecayCopy(string name)
+        => !string.IsNullOrEmpty(name) && name.EndsWith(DecayCopySuffix, StringComparison.Ordinal);
+
+
+    private static bool HasShadowRegistration(GameObject go)
+        => go != null && go.GetComponent<ShadowEnemyRenderer>() != null;
+
+    // Depth-first over the CHILDREN of the source node (the node itself is reported apart, so a receipt can say
+    // "self" or "subtree"). Sets `found` when a shadow registration lives below the source and lifts "a dissolve
+    // copy already exists here" into clonePresent. 1.2.22 review #4: the walk reports `truncated` whenever it
+    // stopped on a depth/node budget with children still unvisited (or could not read a child), because "we did
+    // not finish looking" must never read as "nothing there". An exactly-finished subtree - including a leaf at
+    // the very last node - stays complete, and a found hazard returns immediately.
+    private static void ScanForRegistrations(Transform node, int depth, ref int visited, ref bool found,
+        ref bool truncated, ref bool clonePresent)
+    {
+        if (node == null || found) return;
+        int children;
+        try { children = node.childCount; }
+        catch (Exception error) { CorpseFade.Warn(error); truncated = true; return; }
+        CorpseFadePolicy.SubtreeStep step = CorpseFadePolicy.SubtreeVerdict(depth, children, visited);
+        if (step == CorpseFadePolicy.SubtreeStep.Leaf) return;
+        if (step == CorpseFadePolicy.SubtreeStep.Truncated) { truncated = true; return; }
+        for (int i = 0; i < children; i++)
+        {
+            if (found) return;                                     // hazard already proven: stop, do not extend
+            if (visited >= CorpseFadePolicy.ScanMaxNodes) { truncated = true; return; }
+            Transform child;
+            try { child = node.GetChild(i); }
+            catch (Exception error) { CorpseFade.Warn(error); truncated = true; continue; }
+            if (child == null) { truncated = true; continue; }      // destroyed slot: cannot be inspected
+            visited++;
+            try
+            {
+                if (IsDecayCopy(child.name)) clonePresent = true;
+                if (child.GetComponent<ShadowEnemyRenderer>() != null) found = true;
+            }
+            catch (Exception error) { CorpseFade.Warn(error); truncated = true; continue; }
+            if (!found) ScanForRegistrations(child, depth + 1, ref visited, ref found, ref truncated, ref clonePresent);
+        }
+    }
+
+    // 1.2.22 review: the copy the game already created for this corpse (Decay.m_decayRenderer). A copy whose
+    // Renderer was destroyed, or which has no mesh, cannot be animated - starting Play on it would dissolve
+    // nothing and keep whatever registered that dead Renderer. Only a live, mesh-backed copy counts. Read-only:
+    // this never creates, initialises or destroys anything.
+    internal static bool HasLiveCopy(Renderer copy)
+    {
+        if (copy == null || copy.Pointer == IntPtr.Zero) return false;
+        try
+        {
+            if (!TryResolve(copy, out SkinnedMeshRenderer skinned, out MeshRenderer mesh)) return false;
+            Mesh data = skinned != null ? skinned.sharedMesh : mesh.GetComponent<MeshFilter>()?.sharedMesh;
+            return data != null;
+        }
+        catch (Exception error) { CorpseFade.Warn(error); return false; }
+    }
+    // "The game already owns a dissolve for this hierarchy": the component is playing, or it is armed with a
+    // renderer. An unreadable component counts as owned, so a broken read can never authorise a second clone.
+    private static bool OwnsDissolve(Transform node)
+    {
+        if (node == null) return false;
+        Decay decay = node.GetComponent<Decay>();
+        if (decay == null) return false;
+        try
+        {
+            if (decay.m_playing) return true;
+            Renderer armed = decay.m_targetRenderer;
+            return armed != null && armed.Pointer != IntPtr.Zero;
+        }
+        catch (Exception error) { CorpseFade.Warn(error); return true; }
+    }
+
     // For receipts: name the type the native call really receives, instead of the wrapper's `Renderer`.
     internal static string Describe(Renderer renderer)
     {
@@ -110,6 +257,15 @@ internal static class CorpseFade
 
     internal static int Active => Coordinator.Active;
 
+    // Read-only query used when the corpse picks WHICH renderer to dissolve (CorpseFeedback.FadeRenderer). It runs
+    // the very same classification the pooled gate uses, so "selected" and "armed" can never disagree: a renderer
+    // that would be refused here is simply not offered to TryBegin.
+    internal static bool IsSafeInput(object renderer)
+    {
+        if (renderer is not Renderer candidate || candidate == null) return false;
+        return !CorpseFadePolicy.IsHazardous(FadeRendererCast.Observe(candidate));
+    }
+
     // Bounded pre-cleanup reservation or the unresolved EndAt fallback, both before Hide/Recycle.
     // `native` is the corpse-own component; null means the pooled path must supply its own proof.
     internal static CorpseFadeAttempt TryBegin(Renderer renderer, bool offScene, bool inLevel, int scheduleId, Decay native = null, bool deferTransient = false)
@@ -123,17 +279,21 @@ internal static class CorpseFade
                 if (_playPatched && Diagnostics.AllowLine(CorpseFadePolicy.Reason(CorpseFadeSkip.PatchedByThirdParty)))
                     Plugin.Instance?.Log.LogInfo("[CORPSE] fade=disabled;reason=" + CorpseFadePolicy.Reason(CorpseFadeSkip.PatchedByThirdParty) + ";detail=Decay.Play has third-party patches");
             }
+            // 1.2.22: the input is classified once per attempt. A dangerous source is refused by the POLICY
+            // gate below (reason=hazardous-input) - never borrowed, never armed, never cloned. The corpse-own
+            // component path is untouched: it plays an already-armed component and creates no copy.
+            CorpseFadeHazard hazard = CorpseFadePolicy.Hazard(FadeRendererCast.Observe(renderer));
             var plan = new CorpseFadePlan(
                 Plugin.CorpseFade != null && Plugin.CorpseFade.Value,
                 Plugin.CorpseEffects == null || Plugin.CorpseEffects.Value,
                 inLevel, Paused(), _playPatched, PrefabIsSafe(), PoolState(),
-                renderer != null && !ReferenceEquals(renderer, null), offScene, Coordinator.Active);
+                renderer != null && !ReferenceEquals(renderer, null), offScene, Coordinator.Active, hazard);
             if (TryNative(plan, native, renderer, scheduleId)) { _started++; return CorpseFadeAttempt.Started; }
             if (!CorpseFadePolicy.ShouldAttempt(plan))
             {
                 var skip = CorpseFadePolicy.SkipReason(plan);
                 if (deferTransient && CorpseFadeRetry.IsTransient(skip)) return Defer(CorpseFadePolicy.Reason(skip));
-                LogSkip(skip, scheduleId);
+                LogSkip(skip, hazard, scheduleId);
                 return CorpseFadeAttempt.Finished;
             }
             if (!Coordinator.TryStart(Target, renderer, out CorpseFadeOutcome outcome))
@@ -185,6 +345,15 @@ internal static class CorpseFade
         {
             // Do not re-initialize the corpse-own component; the game already owns its target binding.
             if (!FadeRendererCast.HasTarget(native)) { LogFallback("native-not-initialized", scheduleId); return false; }
+            // 1.2.22 review: prove what this Play would start. Play does not build a copy - CreateDecayRenderer is
+            // reached through InitializeInternal, and the IL gate pins the only two Decay.Initialize calls to the
+            // pooled arm - so a corpse-own component with a target but no live copy dissolves nothing, and an
+            // existing dead copy must not be started at all.
+            Renderer copy;
+            try { copy = native.m_decayRenderer; }
+            catch (Exception error) { Warn(error); LogFallback("native-clone-unreadable", scheduleId); return false; }
+            if (copy == null || copy.Pointer == IntPtr.Zero) { LogFallback("native-no-clone", scheduleId); return false; }
+            if (!FadeRendererCast.HasLiveCopy(copy)) { LogFallback("native-bad-clone", scheduleId); return false; }
             native.Play(CorpseFadePolicy.FadeSeconds);
         }
         catch (Exception error) { Warn(error); LogFallback("native-threw", scheduleId); return false; }
@@ -312,7 +481,7 @@ internal static class CorpseFade
         catch { return CorpseFadePoolState.Missing; }
     }
 
-    private static void LogSkip(CorpseFadeSkip skip, int scheduleId)
+    private static void LogSkip(CorpseFadeSkip skip, CorpseFadeHazard hazard, int scheduleId)
     {
         _skipped++;
         // Deliberate user intent (feature off, lobby, no renderer, off-scene) stays silent; only gates an
@@ -321,7 +490,10 @@ internal static class CorpseFade
         if (!CorpseFadePolicy.IsReportable(skip)) return;
         string reason = CorpseFadePolicy.Reason(skip);
         if (!Diagnostics.ClaimTerminal(scheduleId)) return;
-        Plugin.Instance?.Log.LogInfo($"[CORPSE] fade=skipped;reason={reason};scheduleId={scheduleId};active={Coordinator.Active}");
+        // 1.2.22: a refused input names the hazard, so "we never cloned this corpse" is one bounded line an
+        // operator can reconcile with the instant hide that followed.
+        string detail = hazard == CorpseFadeHazard.None ? string.Empty : ";hazard=" + CorpseFadePolicy.Reason(hazard);
+        Plugin.Instance?.Log.LogInfo($"[CORPSE] fade=skipped;reason={reason}{detail};scheduleId={scheduleId};active={Coordinator.Active}");
     }
 
     private static void LogFailure(CorpseFadeOutcome outcome, int scheduleId)

@@ -383,6 +383,10 @@ internal static class Program
         HotReloadTests.Run(Check);
         CardPresentationTests.Run(Check);
         CorpseFadeTests.Run(Check);
+        FadeInputGuardTests.Run(Check);
+        EnemyBarStaggerTests.Run(Check);
+        StaggerInkTests.Run(Check);
+        DamageNumberPaintTests.Run(Check);
         KillCounterTests.Run(Check);
         DamageNumberOpacityTests.Run(Check);
         HitSoundPolicyTests.Run(Check);

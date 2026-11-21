@@ -202,7 +202,7 @@ internal static class DamageNumberRouter
         DamageOrigin origin, uint hitCategory, bool knownShotgunCategory, bool activeFireCategory,
         ulong shooterLookup, bool nestedSameShot,
         ShotgunVolleyState volley, long target, float x, float y, float z, float damage, HitKind kind,
-        float now, int frame)
+        float now, int frame, float staggerDamage = 0f)
     {
         bool isShotgun = FeedbackPolicy.IsShotgunDamageNumber(preview, origin, knownShotgunCategory, activeFireCategory);
         if (!FeedbackPolicy.ShouldDisplayDamageNumber(masterEnabled, showShotgunNumbers, isShotgun))
@@ -217,7 +217,7 @@ internal static class DamageNumberRouter
             return new DamageNumberDecision(DamageNumberRoute.Immediate, refusal, isShotgun);
         }
         PelletCaptureDecision capture = volley.Capture(target, x, y, z, damage, kind, hitCategory, origin, shooterLookup,
-            nestedSameShot, now, frame);
+            nestedSameShot, now, frame, staggerDamage);
         if (!capture.Taken) return new DamageNumberDecision(DamageNumberRoute.Immediate, capture, true);
         return new DamageNumberDecision(
             capture.Suppressed ? DamageNumberRoute.Suppressed : DamageNumberRoute.Merged, capture, true);
@@ -230,8 +230,12 @@ internal readonly struct MergedShotgunDamageNumber
     internal readonly float X, Y, Z, Damage;
     internal readonly HitKind Kind;
     internal readonly int PelletHits;
+    // 1.2.24: how much of `Damage` was proven to have triggered a stagger. It is a SUBSET of Damage (never an
+    // additional amount), so a merged number can show "18 + 6" without counting anything twice.
+    internal readonly float TriggerDamage;
 
-    internal MergedShotgunDamageNumber(long enemyIdentity, float x, float y, float z, float damage, HitKind kind, int pelletHits)
+    internal MergedShotgunDamageNumber(long enemyIdentity, float x, float y, float z, float damage, HitKind kind, int pelletHits,
+        float triggerDamage = 0f)
     {
         EnemyIdentity = enemyIdentity;
         X = x;
@@ -240,6 +244,7 @@ internal readonly struct MergedShotgunDamageNumber
         Damage = damage;
         Kind = kind;
         PelletHits = pelletHits;
+        TriggerDamage = triggerDamage;
     }
 }
 
@@ -249,17 +254,21 @@ internal sealed class ShotgunDamageNumberBatch
     {
         internal readonly long EnemyIdentity;
         internal double PositionX, PositionY, PositionZ, Damage;
+        // 1.2.24: the subset of Damage the game proved triggered a stagger for THIS enemy. Accumulated separately so a
+        // pellet that triggered and a pellet that did not can be told apart inside one merged number.
+        internal double TriggerDamage;
         internal HitKind Kind;
         internal int PelletHits;
         internal bool MixedKinds;
 
-        internal Accumulator(long enemyIdentity, float x, float y, float z, float damage, HitKind kind)
+        internal Accumulator(long enemyIdentity, float x, float y, float z, float damage, HitKind kind, float triggerDamage)
         {
             EnemyIdentity = enemyIdentity;
             PositionX = x;
             PositionY = y;
             PositionZ = z;
             Damage = damage;
+            TriggerDamage = triggerDamage > 0f ? triggerDamage : 0d;
             Kind = kind;
             PelletHits = 1;
         }
@@ -269,14 +278,15 @@ internal sealed class ShotgunDamageNumberBatch
     private readonly Dictionary<long, Accumulator> _byEnemy = new();
     internal int TargetCount => _entries.Count;
 
-    internal bool Add(long enemyIdentity, float x, float y, float z, float damage, HitKind kind)
+    internal bool Add(long enemyIdentity, float x, float y, float z, float damage, HitKind kind, float triggerDamage = 0f)
     {
         if (enemyIdentity == 0 || !KillPolicy.IsFinite(x) || !KillPolicy.IsFinite(y) || !KillPolicy.IsFinite(z)
             || !KillPolicy.IsFinite(damage) || damage < 0f) return false;
+        float trigger = KillPolicy.IsFinite(triggerDamage) && triggerDamage > 0f ? Math.Min(triggerDamage, damage) : 0f;
 
         if (!_byEnemy.TryGetValue(enemyIdentity, out var item))
         {
-            item = new Accumulator(enemyIdentity, x, y, z, damage, kind);
+            item = new Accumulator(enemyIdentity, x, y, z, damage, kind, trigger);
             _byEnemy.Add(enemyIdentity, item);
             _entries.Add(item);
             return true;
@@ -286,6 +296,7 @@ internal sealed class ShotgunDamageNumberBatch
         item.PositionY += y;
         item.PositionZ += z;
         item.Damage += damage;
+        item.TriggerDamage += trigger;
         item.PelletHits++;
         if (item.Kind != kind) item.MixedKinds = true;
         if (item.MixedKinds) item.Kind = HitKind.Normal;
@@ -300,11 +311,14 @@ internal sealed class ShotgunDamageNumberBatch
         {
             var item = _entries[i];
             float damage = (float)Math.Min(item.Damage, float.MaxValue);
+            // The trigger subset can never exceed the total it belongs to (defensive: the two are accumulated from the
+            // same hits, but a pooled/edited readout must never print "24 = 26 + 6").
+            float trigger = (float)Math.Min(item.TriggerDamage, damage);
             result[i] = new MergedShotgunDamageNumber(item.EnemyIdentity,
                 (float)(item.PositionX / item.PelletHits),
                 (float)(item.PositionY / item.PelletHits),
                 (float)(item.PositionZ / item.PelletHits),
-                damage, item.Kind, item.PelletHits);
+                damage, item.Kind, item.PelletHits, trigger);
         }
         _entries.Clear();
         _byEnemy.Clear();
@@ -466,14 +480,17 @@ internal sealed class ShotgunVolleyState
     // suppressed because the shotgun numbers are hidden). A non-Bullet hit returns false here, i.e. it draws
     // its own number immediately and is never suppressed by the shotgun visibility switch.
     internal bool TryCapture(long enemyIdentity, float x, float y, float z, float damage, HitKind kind, uint gearCategoryId,
-        DamageOrigin origin, float now, ulong shooterLookup = 0UL, bool nestedSameShot = false)
-        => Capture(enemyIdentity, x, y, z, damage, kind, gearCategoryId, origin, shooterLookup, nestedSameShot, now, 0).Taken;
+        DamageOrigin origin, float now, ulong shooterLookup = 0UL, bool nestedSameShot = false, float staggerDamage = 0f)
+        => Capture(enemyIdentity, x, y, z, damage, kind, gearCategoryId, origin, shooterLookup, nestedSameShot, now, 0, staggerDamage).Taken;
 
     // The ONE pellet decision (1.2.19 fix D1). Every branch the capture used to evaluate twice - the raw 0.5 s volley
     // window in the capture and the 0.30 s capture window in the state - is decided here exactly once, so the suppression
     // switch can only ever swallow a hit the volley itself would have accepted as a pellet. `frame` is diagnostic.
+    // 1.2.24: `staggerDamage` is the part of THIS pellet's damage the game proved it staggered with; it travels with the
+    // pellet so a merged number can show the triggering subset instead of guessing from the merged total.
     internal PelletCaptureDecision Capture(long enemyIdentity, float x, float y, float z, float damage, HitKind kind,
-        uint gearCategoryId, DamageOrigin origin, ulong shooterLookup, bool nestedSameShot, float now, int frame)
+        uint gearCategoryId, DamageOrigin origin, ulong shooterLookup, bool nestedSameShot, float now, int frame,
+        float staggerDamage = 0f)
     {
         var scope = _scope;
         if (scope == null)
@@ -502,7 +519,7 @@ internal sealed class ShotgunVolleyState
                 scope.PelletCategoryId, shooter);
         if (!FeedbackPolicy.ShouldMergeShotgunDamageNumbers(true, scope.MergePellets))
             return Refuse(PelletRefusal.NotMerging, scope, gearCategoryId, origin, age, frameDelta, targetKnown, nestedSameShot, shooter);
-        if (!scope.Batch.Add(enemyIdentity, x, y, z, damage, kind))
+        if (!scope.Batch.Add(enemyIdentity, x, y, z, damage, kind, staggerDamage))
             return Refuse(!targetKnown ? PelletRefusal.Target : PelletRefusal.Value,
                 scope, gearCategoryId, origin, age, frameDelta, targetKnown, nestedSameShot, shooter);
         // 1.2.19 Survival retest: the volley remembers the hit-side category its OWN shot delivered. It can only be

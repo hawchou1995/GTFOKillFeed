@@ -24,6 +24,18 @@ internal sealed class DamageRoot
     internal float Damage;
     internal Vector3 Position, Direction;
     internal uint GearCategoryId;
+    // 1.2.24: the stagger receipt for this settlement. The two accumulator values are read from the live game before
+    // the original damage method runs and after it returned; `StaggerSeen`/`StaggerDecidedType` are what the nested
+    // EnemyAgent.OnTakeDamage call delivered while THIS settlement was on the stack. Nothing here is derived from
+    // damage magnitudes, gear categories or timing.
+    internal bool StaggerSeen;
+    internal int StaggerDecidedType;
+    internal bool StaggerBeforeCaptured;
+    internal bool StaggerAccumulatorKnown;
+    internal float StaggerAccumulatorBefore;
+    internal bool StaggerForbidden;
+    internal bool StaggerReactionKnown;
+    internal int StaggerReactionBefore;
 }
 internal sealed class DamageScope
 {
@@ -62,6 +74,10 @@ internal static class KillTracker
     private static int _diagnosticBudget = FeedbackLines;
     private static bool _diagnosticBudgetNoted;
 
+    // 1.2.24: the damage root of the settlement this thread is inside right now (null outside one). The stagger receipt
+    // hook uses it to prove that OnTakeDamage was called from THIS settlement, on THIS thread, for THIS enemy.
+    internal static DamageRoot ActiveRoot => _active?.Root;
+
     internal static void Reset(string reason = "unspecified")
     {
         if (KillLogBudget.Suppressed > 0)
@@ -72,7 +88,7 @@ internal static class KillTracker
         // 1.2.19: the feedback allowance is per LEVEL too (12 lines, then one exhaustion receipt), not per process.
         _diagnosticBudget = FeedbackLines;
         _diagnosticBudgetNoted = false;
-        DamageNumbers.Clear(); ShotgunDamageNumberCapture.Reset(); CorpseFeedback.Reset(reason); TeammateMarks.Reset(reason);
+        DamageNumbers.Clear(); ShotgunDamageNumberCapture.Reset(); StaggerHitCapture.Reset(); CorpseFeedback.Reset(reason); TeammateMarks.Reset(reason);
         DamageFx.Reset(reason); HitSound.Reset(reason); HitMarkerHud.Reset(reason); KillIconHud.Reset(reason); KillIconOccluders.Reset();
     }
     internal static void Spawned(Dam_EnemyDamageBase enemy)
@@ -162,6 +178,17 @@ internal static class KillTracker
                 root.Kind = root.Weakspot ? HitKind.Weakspot : limb.m_type == eLimbDamageType.Armor ? HitKind.Armor : HitKind.Normal;
             }
         }
+        // 1.2.24: snapshot the pre-settlement stagger state ONCE per root, before the original method runs. The
+        // accumulator is compared with the value read after the call returned; a settlement that leaves it at 0 while
+        // it dealt damage proves the game's own threshold branch ran (ProcessReceivedDamage resets it there).
+        if (!root.StaggerBeforeCaptured)
+        {
+            root.StaggerBeforeCaptured = true;
+            root.StaggerAccumulatorKnown = StaggerHitCapture.TryReadAccumulator(enemy, out root.StaggerAccumulatorBefore);
+            EnemyAgent owner = null;
+            try { owner = enemy != null ? enemy.Owner : null; } catch { }
+            root.StaggerReactionKnown = StaggerHitCapture.TryReadReaction(owner, out root.StaggerForbidden, out root.StaggerReactionBefore);
+        }
         var scope = new DamageScope { Previous = _active, Root = root };
         _active = scope;
         return scope;
@@ -231,6 +258,29 @@ internal static class KillTracker
         // The hit/kill lines come from the game's own world-position indicator events; the armour verdict is
         // carried by the impact scope published in the prefix (see BeginLimb/BeginProcessedDamage), never by
         // this late point in the pipeline.
+        // 1.2.24: which part of this number the game itself proved it staggered with. Complete runs from the finalizer,
+        // so the accumulator and the reaction type read here are the POST-settlement state; the receipt (decided
+        // hitreact type) was delivered by the nested EnemyAgent.OnTakeDamage call of this same settlement. The decision
+        // itself is the Unity-free StaggerHitPolicy.Decide, so the smoke suite exercises the production rule.
+        float staggerTrigger = 0f;
+        if (value > 0f)
+        {
+            try
+            {
+                bool afterKnown = StaggerHitCapture.TryReadAccumulator(enemy, out float accumulatedAfter);
+                EnemyAgent owner = null;
+                try { owner = enemy.Owner; } catch { }
+                bool reactionKnown = StaggerHitCapture.TryReadReaction(owner, out bool forbiddenNow, out int reactionAfter);
+                var facts = new StaggerHitFacts(root.LocalSource, enemy.Health > 0f, value, root.StaggerSeen,
+                    root.StaggerDecidedType, root.StaggerForbidden || forbiddenNow,
+                    root.StaggerAccumulatorKnown && afterKnown, root.StaggerAccumulatorBefore, accumulatedAfter,
+                    root.StaggerReactionKnown && reactionKnown, root.StaggerReactionBefore, reactionAfter);
+                StaggerHitVerdict verdict = StaggerHitPolicy.Decide(facts);
+                if (verdict.Green) staggerTrigger = value;
+                StaggerHitCapture.Report(in verdict, value, Time.frameCount);
+            }
+            catch (Exception error) { Note("stagger receipt skipped: " + error.GetType().Name); }
+        }
         if (value > 0 || root.Kind == HitKind.Armor)
         {
             // 1.2.19: the root's origin travels with the number, and the classifier reports which route it took. The
@@ -238,7 +288,7 @@ internal static class KillTracker
             // a shot merged and when every pellet drew its own number.
             // D6: `root.PlayerLookup` is the local player this damage came from (ResolveSource: 0 for anybody else),
             // so the volley can refuse a hit that provably belongs to another shooter instead of summing it in.
-            DamageNumberRoute route = DamageNumbers.Add(root.Position, value, root.Kind, false, root.GearCategoryId, root.Origin, root.PlayerLookup);
+            DamageNumberRoute route = DamageNumbers.Add(root.Position, value, root.Kind, false, root.GearCategoryId, root.Origin, root.PlayerLookup, staggerTrigger);
             if (value > 0f) DamageFx.NoteDamage(value);
             HitSound.OnLocalHit(root.Kind);
             Note($"number={value:0.####};kind={root.Kind};origin={root.Origin};route={route};hitCat={root.GearCategoryId};frame={Time.frameCount};source={(root.Processed ? "final-settlement" : root.HasValue ? "native-modifiers" : "health-delta")}");

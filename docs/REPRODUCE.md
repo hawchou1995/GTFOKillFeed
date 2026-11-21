@@ -8,100 +8,68 @@
 - tag `v1.2.17`：1.2.17 发布源码（反编译基线 + 1.2.17 新增文件）。不要在这个源码树直接运行
   `tools/verify_baseline.py`；它期望的是 1.2.16 重建产物与 1.2.16 原 DLL 的对照。
 - tag `v1.2.19`：1.2.19 发布源码 = 作者源码树的一次快照（`src/HawChow.GTFOKillFeed/` 47 个 `.cs`）。
-- tag `v1.2.21`（同步至 `main`）= **1.2.21 作者源码树**：同样是「一个文件可声明多个类型」的作者布局，
-  `src/HawChow.GTFOKillFeed/` 51 个 `.cs`（1.2.20/1.2.21 新增 `CorpseFadeRetry.cs`、`KillCounterPolicy.cs`、
-  `KillCounterAnchorPolicy.cs`、`KillCounterHud.cs`）；反编译基线的 82 个「一个文件一个类型」单元已并入
-  这些文件，不再存在。构建产物与作者 1.2.21 发布 DLL **逐字节相同**，见 §0b；本文件 §1–§5 的预期
-  数字属于 `baseline-1.2.16` / `v1.2.17` 两个 tag。
+- `v1.2.21`：51 个生产 `.cs`。该版复现命令和 SHA256 保留在该 tag 的本文件。
+- 1.2.24 从 `6f134510dd4739632ae450b72db38b883586a85e`（1.2.21）升级。54 个生产 `.cs` 保留作者代码，按公开布局置于 `src/HawChow.GTFOKillFeed/`；新增 `DamageNumberPaint.cs`、`StaggerHitCapture.cs`、`StaggerHitPolicy.cs`。根目录的 SDK pin、逐文件换行规则和 `src/` 内的嵌入资源布局不变。
 
-## 0b. 1.2.21：构建即发布产物（`v1.2.21` / `main`）
+## 1.2.24：从公开源码复现实测 DLL
 
-```bash
-export DOTNET=/path/to/dotnet            # 6.0.428（见 §0），或改装 6.0.428
-export GTFO_DIR=/path/to/Survival        # 只读，含 BepInEx/core 与 BepInEx/interop
-"$DOTNET" build src/GTFOKillFeed.csproj -c Release \
-  -p:GTFO_DIR="$GTFO_DIR" --configfile nuget.config
+以下是 Windows PowerShell 示例。从仓库根开始，设置 `$env:GTFO_DIR` 指向自己合法持有的 Survival 环境（只读，需有 `BepInEx/core` 和 `BepInEx/interop`）；另准备一个**仓库外**的临时目录。不要安装到游戏、复制 profile 或提交 `bin/`、`obj/`、日志和依赖 DLL。
+
+仓库内仍锁定 SDK `6.0.428` / `rollForward=latestPatch`。本次字节对照使用 SDK **8.0.428**、.NET 6 运行时，在仓库外运行 `dotnet build`，用绝对路径指向公开工程；没有修改 `global.json`。不同 SDK 或其它 interop 集不保证同一哈希。使用以下命令前，设置 `$env:PI_SCRATCH_DIR` 为上述临时目录（测试将临时配置写到这里）。
+
+```powershell
+$repo = (Get-Location).Path
+Set-Location -LiteralPath $env:PI_SCRATCH_DIR
+dotnet --version                    # 本次为 8.0.428
+dotnet build "$repo/src/GTFOKillFeed.csproj" -c Release --configfile "$repo/nuget.config"
+if ($LASTEXITCODE) { throw 'plugin build failed' }
+$dll = "$repo/src/bin/Release/GTFOKillFeed.dll"
+$expected = '65D4F79D004BCD61F01CBC65242808DA6B96BFD66CD05E710EECB7DFF28A7C6C'
+if ((Get-FileHash -Algorithm SHA256 $dll).Hash -ne $expected) { throw 'DLL hash mismatch' }
 ```
 
-预期：构建成功、0 个错误。`src/Properties/AssemblyInfo.cs` 已随 1.2.19 移除；程序集版本属性的唯一来源是
-`src/HawChow.GTFOKillFeed/PluginInfo.cs` 顶部的 AssemblyVersion/AssemblyFileVersion，二者引用同文件的版本常量；
-`src/GTFOKillFeed.csproj` 的 `<Version>1.2.21</Version>` 与其保持一致。产物 `src/bin/Release/GTFOKillFeed.dll`：
+实测重建结果：**1,333,248 字节**，FileVersion `1.2.24.0`，0 警告、0 错误；SHA256 与 Survival 实测 DLL 一致。公开工程使用作者的编译单元和嵌入资源，不使用反编译桩；`GTFO_DIR` 不提供本机默认路径，引用不会作为插件依赖复制到发布目录。
 
-| 项 | 值 |
-|---|---|
-| 字节数 | `1311744` |
-| SHA256 | `E337E8AAA0CB7B191DBB8CAF74E4FF35E98FAA423E9C9F84ABD6B07533BDD1BD` |
-| FileVersion / ProductVersion | `1.2.21.0` / `1.2.21.0` |
+### 五组测试与编译后 IL 检查
 
-该 SHA256 与作者 1.2.21 发布 DLL 逐字节相同：源码树 → 构建产物同源，中间没有手工替换。本仓 csproj 与
-作者 csproj 的差异只涉及路径与资源清单（`RootNamespace` 为空、`GTFO_DIR` 默认空 + `RequireGtfoDir`
-早失败、Release 下 `DebugType=none`/`DebugSymbols=false` 显式写死、资源在 `src/` 平铺而不是
-`Assets/`+`Assets/audio/`），`Compile` 的字母序与嵌入资源的逻辑名/顺序都与作者树一致，所以编译结果
-逐字节相同。
+在同一 PowerShell 会话、同一仓库外工作目录继续：
 
-SDK 版本门禁：`global.json` 仍锁 `6.0.428` + `rollForward=latestPatch`，只装了更高特性带 SDK 的机器会
-直接报 `Requested SDK version: 6.0.428`。这挡的是「用别的编译器生成不同 IL」，属有意设计；要么装
-6.0.428，要么**在仓库外的目录**用绝对路径执行（SDK 解析从当前目录向上查找，读不到仓库内
-`global.json`）：
-
-```bash
-cd "$SCRATCH" && "$DOTNET" build /abs/path/to/repo/src/GTFOKillFeed.csproj -c Release -p:GTFO_DIR="$GTFO_DIR"
+```powershell
+foreach ($name in 'GTFOKillFeed.Smoke','GTFOKillFeed.ConfigSmoke','GTFOKillFeed.HudReplay','KillFeed.Policy.Tests','KillFeed.Tests','KillFeed.IlGuard') {
+    $project = "$repo/tests/$name"
+    dotnet build "$project/$name.csproj" -c Release --configfile "$repo/nuget.config"
+    if ($LASTEXITCODE) { throw "build failed: $name" }
+    $extra = @(); if ($name -eq 'KillFeed.IlGuard') { $extra = @($dll) }
+    dotnet "$project/bin/Release/net6.0/$name.dll" @extra
+    if ($LASTEXITCODE) { throw "test failed: $name" }
+}
 ```
 
-仓库内的 `global.json` 不要为此改动。上面表格的 SHA256 就是用「仓库外目录 + SDK 8.0.428」复现的，
-与作者 DLL 仍然逐字节相同。
+| 工程 | 本次结果 | 检查对象 |
+|---|---:|---|
+| `GTFOKillFeed.Smoke` | 1542 断言通过 | 含淡出输入拒绝、部位分组、硬直归属、合并弹丸分色和绘制顺序 |
+| `GTFOKillFeed.ConfigSmoke` | 97 断言通过 | 真实 BepInEx `ConfigFile` 的绑定、迁移与热重载 |
+| `GTFOKillFeed.HudReplay` | 20 断言通过 | 生产计数 HUD 的 Tick/Draw；引擎 API 替身，不是 Unity 截图 |
+| `KillFeed.Policy.Tests` | 424 通过 / 0 失败 | 视觉策略、投影与避让决策 |
+| `KillFeed.Tests` | 407 通过 / 0 失败 | 配置、生产接线、回收与文档门禁 |
+| `KillFeed.IlGuard` | `ILGUARD failures=0` | 从实测哈希对应的 DLL 读取编译后接线 |
 
-测试（同一份源码树，5 个测试工程 + 1 个 IL 守卫都要跑）：
+另外运行 `tools/` 下 9 个只读 PowerShell 检查。5 个还核对真实 interop 的签名或字段；全部使用同一个重建 DLL 和本机提供的 Mono.Cecil，不复制第三方 DLL。
 
-```bash
-"$DOTNET" build tests/KillFeed.Policy.Tests/KillFeed.Policy.Tests.csproj -c Release -p:GTFO_DIR="$GTFO_DIR"
-"$DOTNET" build tests/KillFeed.Tests/KillFeed.Tests.csproj -c Release -p:GTFO_DIR="$GTFO_DIR"
-"$DOTNET" build tests/KillFeed.IlGuard/KillFeed.IlGuard.csproj -c Release -p:GTFO_DIR="$GTFO_DIR"
-"$DOTNET" build tests/GTFOKillFeed.Smoke/GTFOKillFeed.Smoke.csproj -c Release
-"$DOTNET" build tests/GTFOKillFeed.ConfigSmoke/GTFOKillFeed.ConfigSmoke.csproj -c Release -p:GTFO_DIR="$GTFO_DIR"
-"$DOTNET" build tests/GTFOKillFeed.HudReplay/GTFOKillFeed.HudReplay.csproj -c Release
-
-"$DOTNET" tests/KillFeed.Policy.Tests/bin/Release/net6.0/KillFeed.Policy.Tests.dll       # RESULT pass=424 fail=0
-"$DOTNET" tests/KillFeed.Tests/bin/Release/net6.0/KillFeed.Tests.dll                     # SUMMARY pass=407;fail=0
-"$DOTNET" tests/KillFeed.IlGuard/bin/Release/net6.0/KillFeed.IlGuard.dll src/bin/Release/GTFOKillFeed.dll   # ILGUARD failures=0
-"$DOTNET" tests/GTFOKillFeed.Smoke/bin/Release/net6.0/GTFOKillFeed.Smoke.dll             # PASS: 1409 kill-feed policy assertions
-"$DOTNET" tests/GTFOKillFeed.ConfigSmoke/bin/Release/net6.0/GTFOKillFeed.ConfigSmoke.dll # CONFIG_SMOKE=PASS;ASSERTIONS=97
-"$DOTNET" tests/GTFOKillFeed.HudReplay/bin/Release/net6.0/GTFOKillFeed.HudReplay.dll     # HUD_REPLAY=PASS;ASSERTIONS=20;PRODUCTION=Tick+Draw
+```powershell
+$withInterop = 'EnemyBarStaggerIl','StaggerInkIl','HitMarkerIl','HitSoundIl','KillIconIl'
+foreach ($name in (@('CorpseFadeIl','DamageNumberOpacityIl','GlueWieldWiring','ShotgunVolleyIl') + $withInterop)) {
+    $extra = @(); if ($name -in $withInterop) { $extra = @('-InteropDir', "$env:GTFO_DIR/BepInEx/interop") }
+    powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$repo/tools/Test-$name.ps1" -PluginDll $dll -CecilPath "$env:GTFO_DIR/BepInEx/core/Mono.Cecil.dll" @extra
+    if ($LASTEXITCODE) { throw "IL check failed: $name" }
+}
 ```
 
-`tests/GTFOKillFeed.Smoke`、`tests/GTFOKillFeed.ConfigSmoke`、`tests/GTFOKillFeed.HudReplay` 是 1.2.21
-新增的作者验收工程（链接 `src/HawChow.GTFOKillFeed` 的生产源码，不是复制策略）：
+预期：9/9 退出 0。`Test-CorpseFadeIl` 和 `Test-EnemyBarStaggerIl` 检查淡出目标筛选与尸体自有副本校验；`Test-StaggerInkIl` 检查命中回执和实际绘制顺序；`Test-ShotgunVolleyIl` 检查弹丸归属与唯一合并出口。配置清单在仓库根运行 `python tools/feature_switch_inventory.py` 可再生成，当前为 111 个键。
 
-- **Smoke（1409 断言）**：纯策略源文件按链接编译，并嵌入与插件完全相同的 `KillFeed.Audio.*.wav`、
-  `KillFeed.Icons.hitmark-*.png`、`KillFeed.EnemyNames.defaults.json`，逐字节断言出货音效/标记/名单；
-  另有 `KillCounterTests`（档位计数、饱和、布局、`CorpseFadeRetry` 窗口）、`HotReloadTests`、
-  `ShotgunVolley*` 等，以及「源码里只 `Counters.Add` 一次」「F9 预览不计入总数」这类文本门禁。
-- **ConfigSmoke（97 断言）**：用真实 `BepInEx.Core` 的 `ConfigFile` 跑迁移/热重载（新安装、旧配置、
-  只补部分新键、存在但读不出），不是重写一份配置实现；需要 `GTFO_DIR`。
-- **HudReplay（20 断言）**：把生产 `KillCounterHud.Tick/Draw` 直接跑在
-  `tests/GTFOKillFeed.HudReplay/EngineStubs.cs` 的引擎 API 边界替身上，重放三档击杀、
-  四条「合成器不可验证」拒绝分支、目标/窗口分辨率不一致、缺 sprite 等路径，并断言全程没有移动或
-  缩放原生血条。
+**证据边界：** 这里的离线检查不启动游戏。另有 Survival FX.3 Overload 的实测：淡出开启，黑屏未复现，有 4 条淡出开始回执；另有 1 条 `Decay.InitializeInternal` 原生空引用，调用归属及画面影响待复测。不得据此断言原生异常已消除，或棱彩与档位叠加已在该局逐项验证。
 
-源码门禁说明：`tests/KillFeed.Tests/SourceGateTests.cs` 恢复了作者树 1.2.21 的门禁
-（scan-before-first-bind、注册键、生产接线、尸体资源回收不变量、总开关字面量），只做两处布局适配：
-`Root()` 锚 `src/GTFOKillFeed.csproj`，`Read("src/HawChow.GTFOKillFeed/X.cs")` 在该目录下取文件。
-`gate.doc.*` 仍然要求「每个 `Config.Bind` 键都要在 `docs/FEATURE-SWITCHES.md` 里有反引号词条」，
-当前 110 键全覆盖（§9 由 `python tools/feature_switch_inventory.py` 生成）。作者树的
-`scripts/Verify.ps1` 不在本仓库内。
-
-**验证边界（不得夸大）**：以上都是构建期/进程内的源码与策略证据，纯 .NET 与文本断言，不加载 Unity、
-不启动游戏。`HudReplay` 是「生产 Tick/Draw + 引擎 API 边界替身」，不等于游戏内画面证据；碰撞盒、
-相机投影、`Il2Cpp` 互操作、真实 `Decay`/GUI 合成行为都没有在游戏里验证。
-
-原始 1.2.16 ZIP 不含在本仓库，请使用自己合法持有的原包。下面所有临时输出都放在仓库外的
-`$SCRATCH`，不要把 `orig/`、`bin/`、`obj/` 或生成的证据提交回来。
-
-历史工具边界：下方 §1–§5 的 `verify_baseline.py`、`verify_integration.py`、`verify_docs.py`、
-`package_release.py`、`verify_package.py` 的期望值和布局属于对应历史 tag，不是 1.2.21 的通用发布命令。
-其中旧文档/打包工具仍按旧 AssemblyInfo 布局取版本；不要在当前作者源码树运行后把失败当作 1.2.21 构建失败。
-当前版使用本节的构建、五组测试与 IL 守卫；发布 ZIP 的原始文档与图标保存在 `Thunderstore/`，
-它们与 Release 资产中同名成员逐字节一致，根 README 为源码仓说明。
+下方 §0–§5 保留旧版复现说明。旧版基线、文档与打包脚本的布局和期望值属于相应历史 tag，不是 1.2.24 的发布门禁。
 
 ## 0. 前置
 

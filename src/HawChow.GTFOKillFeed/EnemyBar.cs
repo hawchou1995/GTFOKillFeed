@@ -37,6 +37,17 @@ internal static class EnemyBar
     private static readonly GUIContent NameContent = new();
     private static readonly GUIContent PartContent = new();
     private static readonly GUIContent NumbersContent = new();
+    // 1.2.22: its own style and content so the stagger row can never borrow (or disturb) the name, weakspot
+    // or C-Foam labels; the colour is the fixed light green from BarPolicy, not a configurable bar colour.
+    private static readonly GUIContent StaggerContent = new();
+    private static GUIStyle _staggerStyle;
+    private static BarPolicy.StaggerValues _stagger = BarPolicy.StaggerValues.None;
+    private static string _labelStagger = string.Empty;
+    // 1.2.23: the name label's real first-glyph x (rect + alignment + padding/content offset), shared by the green
+    // row so it starts exactly under the monster name; invalid when the name is hidden, which makes the row use the
+    // health bar's own left edge instead.
+    private static float _nameOriginX;
+    private static bool _nameOriginValid;
     private static EnemyAgent _target;
     private static string _name = string.Empty;
     private static string _weakspotPart = string.Empty, _partLanguage;
@@ -52,6 +63,11 @@ internal static class EnemyBar
     // Independent diagnostic budgets: the LogFocus debug switch must never be able to silence real bar
     // exceptions, and exception warnings must never eat the focus-log budget.
     private static readonly DiagnosticBudget WarningBudget = new();
+    // 1.2.22: bounded evidence line for a normal-hitreact value whose unit could not be proven for this enemy.
+    // 1.2.23: the anatomical-part refusal gets its OWN allowance, so an unknown/mod part can never spend the
+    // normal-hitreact evidence line (or silence it).
+    private static readonly DiagnosticBudget LogStaggerBudget = new();
+    private static readonly DiagnosticBudget LogStaggerPartBudget = new();
     private static readonly DiagnosticBudget FocusChangeBudget = new();
     private static readonly DiagnosticBudget FocusAcquiredBudget = new();
 
@@ -94,6 +110,10 @@ internal static class EnemyBar
         _labelPartVisible = false;
         _labelNumbered = false;
         _labelFoamMode = false;
+        _stagger = BarPolicy.StaggerValues.None;
+        _labelStagger = string.Empty;
+        _nameOriginValid = false;
+        _nameOriginX = 0f;
         EnemyFocus.Reset();
     }
 
@@ -167,6 +187,11 @@ internal static class EnemyBar
                     _foamTag = string.Empty;
                 }
                 _partLanguage = language;
+                // 1.2.22: the stagger row is refreshed on the same 0.35 s cadence as the weakspot tags, from
+                // THIS enemy only (no scene scan, no extra network read), and formatted once here so drawing
+                // never allocates or recomputes.
+                _stagger = ReadStagger(found);
+                _labelStagger = BarPolicy.StaggerLine(_stagger, language);
                 _weakspotRefreshAt = now;
             }
             if (switched && FocusAcquiredBudget.TryUse(12))
@@ -257,6 +282,10 @@ internal static class EnemyBar
             DrawFocusOutline(rect, edge, barHeight, opacity);
 
             DrawLabel(rect, width, height, opacity, border);
+            // 1.2.22: one extra row UNDER the bar. It is drawn after every existing element, with its own
+            // style/content/colour, and the method restores nothing globally: the caller's GUI.color is put
+            // back by the finally block, exactly as before.
+            DrawStaggerRow(rect, width, height, opacity, border);
         }
         catch (Exception error) { Warn("draw", error.Message); }
         finally { GUI.color = previous; }
@@ -346,6 +375,8 @@ internal static class EnemyBar
 
     private static void DrawLabel(Rect bar, int screenWidth, int screenHeight, float opacity, Color shadowColor)
     {
+        _nameOriginValid = false;
+        _nameOriginX = 0f;
         bool showName = Plugin.EnemyBarShowName == null || Plugin.EnemyBarShowName.Value;
         bool showWeakspotPart = Plugin.EnemyBarShowWeakspotPart == null || Plugin.EnemyBarShowWeakspotPart.Value;
         bool showNumbers = Plugin.EnemyBarShowNumbers == null || Plugin.EnemyBarShowNumbers.Value;
@@ -407,7 +438,10 @@ internal static class EnemyBar
         float left = row.x + padding;
         if (NameContent.text.Length > 0)
         {
-            DrawLabelText(NameContent, new Rect(left, row.y, nameWidth + scale, row.height), _nameStyle, nameColor, shadowColor, opacity, scale);
+            var nameRect = new Rect(left, row.y, nameWidth + scale, row.height);
+            _nameOriginX = TextOriginX(nameRect, _nameStyle, nameWidth);
+            _nameOriginValid = true;
+            DrawLabelText(NameContent, nameRect, _nameStyle, nameColor, shadowColor, opacity, scale);
             left += nameWidth + (PartContent.text.Length > 0 ? spacing : 0f);
         }
         if (PartContent.text.Length > 0)
@@ -416,6 +450,30 @@ internal static class EnemyBar
         {
             float numberX = row.xMax - padding - numberWidth;
             DrawLabelText(NumbersContent, new Rect(numberX, row.y, numberWidth + scale, row.height), _numbersStyle, numbersColor, shadowColor, opacity, scale);
+        }
+    }
+
+    // 1.2.23: one text-origin calculation shared by the name and the green row. GUIStyle.CalcSize only says how wide
+    // the glyphs are; the real first glyph also includes the rect origin, alignment and the style's padding/offset.
+    // A style with a centred rect but left-aligned text would NOT start at the rect centre, so both facts are used.
+    private static float TextOriginX(Rect rect, GUIStyle style, float contentWidth)
+        => BarPolicy.TextOriginX(rect.x, rect.width, contentWidth, style.padding.left, style.padding.right,
+            style.contentOffset.x, AlignmentCode(style.alignment));
+
+    private static int AlignmentCode(TextAnchor anchor)
+    {
+        switch (anchor)
+        {
+            case TextAnchor.UpperCenter:
+            case TextAnchor.MiddleCenter:
+            case TextAnchor.LowerCenter:
+                return BarPolicy.TextAlignCenter;
+            case TextAnchor.UpperRight:
+            case TextAnchor.MiddleRight:
+            case TextAnchor.LowerRight:
+                return BarPolicy.TextAlignRight;
+            default:
+                return BarPolicy.TextAlignLeft;
         }
     }
 
@@ -458,6 +516,14 @@ internal static class EnemyBar
             clipping = TextClipping.Clip,
             richText = false
         };
+        // 1.2.23: the row starts at the monster name's real first glyph, so it is left-aligned and inherits the name
+        // style's padding/content offset. Its rect is placed from that origin - never a centred rect.
+        _staggerStyle = new GUIStyle(_nameStyle)
+        {
+            alignment = TextAnchor.MiddleLeft,
+            fontStyle = FontStyle.Normal,
+            wordWrap = false
+        };
     }
 
     private static void SetFontSize(int size)
@@ -465,6 +531,7 @@ internal static class EnemyBar
         _nameStyle.fontSize = size;
         _weakspotStyle.fontSize = size;
         _numbersStyle.fontSize = size;
+        if (_staggerStyle != null) _staggerStyle.fontSize = size;
     }
 
     private static float Measure(GUIContent content, GUIStyle style)
@@ -503,6 +570,172 @@ internal static class EnemyBar
         GUI.color = color;
         GUI.DrawTexture(rect, Texture2D.whiteTexture);
     }
+    // 1.2.23: one row directly under the bar, LEFT-ANCHORED to the monster name's real first glyph (or to the
+    // health bar's left edge when ShowName is off). It reuses the existing shadow and fade alpha through
+    // DrawLabelText, owns its font size, scales down before wrapping, wraps at group boundaries and clamps a
+    // still-too-wide token with a visible ellipsis. It is never dropped merely because the screen is narrow.
+    private static void DrawStaggerRow(Rect bar, int screenWidth, int screenHeight, float opacity, Color shadowColor)
+    {
+        if (Plugin.EnemyBarShowStaggerLine != null && !Plugin.EnemyBarShowStaggerLine.Value) return;
+        if (string.IsNullOrEmpty(_labelStagger) || _staggerStyle == null) return;
+        if (screenWidth <= 0 || screenHeight <= 0) return;
+        float scale = BarPolicy.ResolutionScale(screenHeight);
+        int baseFont = BarPolicy.StaggerFontPixels(
+            Plugin.EnemyBarNumberSize != null ? Plugin.EnemyBarNumberSize.Value : BarPolicy.DefaultNumberSize, screenHeight);
+        int minFont = BarPolicy.StaggerMinFontPixels(screenHeight);
+        bool showName = Plugin.EnemyBarShowName == null || Plugin.EnemyBarShowName.Value;
+        float targetLeft = showName && _nameOriginValid ? _nameOriginX : bar.x;
+        float available = BarPolicy.StaggerAvailableWidth(targetLeft, screenWidth, screenHeight);
+        if (available <= 0f)
+        {
+            targetLeft = BarPolicy.StaggerRowMargin(screenHeight);
+            available = BarPolicy.StaggerAvailableWidth(targetLeft, screenWidth, screenHeight);
+            if (available <= 0f) return;
+        }
+
+        string language = _partLanguage ?? "zh";
+        BarPolicy.StaggerTokens(_stagger, language, out string limbToken, out string torsoToken, out string normalToken);
+        string full = limbToken + torsoToken + normalToken;
+        int font = baseFont;
+        while (font > minFont && MeasureAt(full, font) > available) font--;
+        float fullWidth = MeasureAt(full, font);
+        int rows = BarPolicy.StaggerRows(available, fullWidth,
+            MeasureAt(limbToken + torsoToken, font),
+            Mathf.Max(MeasureAt(limbToken, font), Mathf.Max(MeasureAt(torsoToken, font), MeasureAt(normalToken, font))));
+        string[] lines = rows == 1 ? new[] { full }
+            : rows == 2 ? new[] { limbToken + torsoToken, normalToken }
+            : new[] { limbToken, torsoToken, normalToken };
+        float width = 0f;
+        for (int i = 0; i < lines.Length; i++)
+        {
+            lines[i] = ClampToWidth(lines[i], font, available);
+            float measured = MeasureAt(lines[i], font);
+            if (measured > width) width = measured;
+        }
+
+        _staggerStyle.fontSize = font;
+        float rowHeight = font + 8f * scale;
+        float totalHeight = rowHeight * lines.Length;
+        float y = BarPolicy.StaggerRowY(bar.yMax, screenHeight);
+        float bottom = screenHeight - BarPolicy.StaggerRowMargin(screenHeight);
+        if (y + totalHeight > bottom) y = Mathf.Max(bar.yMax + 1f, bottom - totalHeight);
+        float x = BarPolicy.StaggerRowLeft(targetLeft, width, screenWidth, screenHeight)
+            - (_staggerStyle.padding.left + _staggerStyle.contentOffset.x);
+        if (x < 0f) x = 0f;
+        BarPolicy.StaggerInk(out float staggerRed, out float staggerGreen, out float staggerBlue);
+        Color body = new Color(staggerRed, staggerGreen, staggerBlue, 1f);
+        for (int i = 0; i < lines.Length; i++)
+        {
+            StaggerContent.text = lines[i];
+            DrawLabelText(StaggerContent, new Rect(x, y + i * rowHeight, width + scale, rowHeight),
+                _staggerStyle, body, shadowColor, opacity, scale);
+        }
+    }
+
+    private static float MeasureAt(string text, int font)
+    {
+        if (string.IsNullOrEmpty(text)) return 0f;
+        _staggerStyle.fontSize = font;
+        StaggerContent.text = text;
+        return _staggerStyle.CalcSize(StaggerContent).x;
+    }
+
+    private static string ClampToWidth(string text, int font, float maxWidth)
+    {
+        if (string.IsNullOrEmpty(text) || !KillPolicy.IsFinite(maxWidth) || maxWidth <= 0f) return string.Empty;
+        if (MeasureAt(text, font) <= maxWidth) return text;
+        int low = 0, high = text.Length;
+        while (low < high)
+        {
+            int mid = (low + high + 1) / 2;
+            StaggerContent.text = text.Substring(0, mid) + "…";
+            if (_staggerStyle.CalcSize(StaggerContent).x <= maxWidth) low = mid;
+            else high = mid - 1;
+        }
+        return low <= 0 ? "…" : text.Substring(0, low) + "…";
+    }
+
+    // 1.2.22/1.2.23: the two part groups and the normal hitreact, read from the focused enemy only (no scene scan,
+    // no network).
+    //   limbs/torso - every live limb the GAME treats as destroyable: the same predicate the shipped dismemberment
+    //            path uses (CD_CharacterDestructionCollider.HasDestruction() and not IsDestroyed). The group comes
+    //            from that same collider's anatomical field m_bodyPart (CharacterDestruction.CD_BodypartType):
+    //            upper/lower arm and upper/lower leg -> 四肢, chest/stomach/hips -> 躯体. The head limb is skipped by
+    //            pointer AND by part; Unspecified/Head/any mod value is refused, never guessed from a number, an
+    //            array index, a GameObject name or the enemy id. Current durability (m_health) and fixed capacity
+    //            (m_healthMax) stay separate; a group with no live breakable part is the dash, so a body with only
+    //            whole-body hitreact cannot fake a torso value.
+    //   normal - the game's own normal-hitreact budget, read live: GameData.HealthData.DamageUntilHitreact minus the
+    //            running accumulator Dam_EnemyDamageBase.m_damBuildToHitreact (both through the same properties a
+    //            MTFO/EEC-edited install uses). Native proof that this is an ABSOLUTE damage amount compared against
+    //            an accumulated damage sum, with no ratio and no HealthMax factor, is quoted in BarPolicy
+    //            (ProcessReceivedDamage RVA 0x137E570: addss [rbx+0x150] ... comiss [rax+0x14] ... jae ... reset).
+    //            The row therefore prints the remaining damage; if either side is unreadable the row prints the
+    //            no-data dash and one bounded diagnostic carries the raw values for later reconciliation.
+    private static BarPolicy.StaggerValues ReadStagger(EnemyAgent enemy)
+    {
+        var limbGroup = new BarPolicy.StaggerGroupBuilder();
+        var torsoGroup = new BarPolicy.StaggerGroupBuilder();
+        try
+        {
+            Dam_EnemyDamageBase damage = enemy.Damage;
+            var limbs = damage != null ? damage.DamageLimbs : null;
+            long headPointer = 0;
+            try { var head = enemy.m_headLimb; if (head != null && head.Pointer != IntPtr.Zero) headPointer = head.Pointer.ToInt64(); }
+            catch (Exception error) { Warn("stagger-head", error.Message); }
+            if (limbs != null)
+            {
+                for (int i = 0; i < limbs.Length; i++)
+                {
+                    var limb = limbs[i];
+                    if (limb == null) continue;
+                    bool destroyed;
+                    float remaining, capacity;
+                    int bodyPart;
+                    try
+                    {
+                        if (headPointer != 0 && limb.Pointer != IntPtr.Zero && limb.Pointer.ToInt64() == headPointer) continue;
+                        destroyed = limb.IsDestroyed;
+                        var destruction = limb.m_destruction;
+                        if (destruction == null || !destruction.HasDestruction()) continue;   // not a destroyable limb
+                        bodyPart = (int)destruction.m_bodyPart;                                 // anatomical enum, not eLimbDamageType
+                        remaining = limb.m_health;
+                        capacity = limb.m_healthMax;
+                    }
+                    catch (Exception error) { Warn("stagger-limb", error.Message); continue; }
+                    if (destroyed) continue;
+                    BarPolicy.StaggerBodyGroup group = BarPolicy.BodyGroup(bodyPart);
+                    if (group == BarPolicy.StaggerBodyGroup.Limbs) limbGroup.Add(remaining, capacity);
+                    else if (group == BarPolicy.StaggerBodyGroup.Torso) torsoGroup.Add(remaining, capacity);
+                    else if (LogStaggerPartBudget.TryUse(4))
+                        Plugin.Instance?.Log.LogInfo($"[BAR] stagger=part;grouped=no;bodyPart={bodyPart};limbIndex={i};note=unspecified-head-or-mod-part-not-a-limb-or-torso");
+                }
+            }
+        }
+        catch (Exception error) { Warn("stagger-limbs", error.Message); }
+
+        bool hasNormal = false;
+        float threshold = 0f, accumulated = 0f, normalLeft = 0f;
+        try
+        {
+            GameData.EnemyBalancingDataBlock balancing = enemy.EnemyBalancingData;
+            GameData.HealthData data = balancing != null ? balancing.Health : null;
+            Dam_EnemyDamageBase damage = enemy.Damage;
+            if (data != null && damage != null)
+            {
+                threshold = data.DamageUntilHitreact;
+                accumulated = damage.m_damBuildToHitreact;
+                // The game's own formula: the field is an absolute damage budget, so what a hit still needs is
+                // max(0, threshold - accumulator). No ratio, no HealthMax factor, no ceiling rounding.
+                hasNormal = BarPolicy.StaggerRemaining(threshold, accumulated, out normalLeft);
+            }
+        }
+        catch (Exception error) { Warn("stagger-hitreact", error.Message); }
+        if (!hasNormal && LogStaggerBudget != null && LogStaggerBudget.TryUse(4))
+            Plugin.Instance?.Log.LogInfo($"[BAR] stagger=normal;shown=no;reason={(threshold > 0f ? "accumulator-unreadable" : "config-absent")};damageUntilHitreact={threshold:0.###};damBuildToHitreact={accumulated:0.###};note=dash-instead-no-conversion-applied");
+        return new BarPolicy.StaggerValues(limbGroup.Build(), torsoGroup.Build(), hasNormal, normalLeft);
+    }
+
 
     // Single read path, unchanged since 1.2.9: the bar mirrors the enemy's own Damage.Health/HealthMax.
     // With DamageSync installed on both machines the client's Health is host-authoritative, so no

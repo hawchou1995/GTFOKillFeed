@@ -1,17 +1,16 @@
-# KillFeed 1.2.21
+# KillFeed 1.2.24
 
 GTFO 客户端反馈插件：击杀卡片、头顶图标、伤害数字、命中标记与音效、焦点敌人血条、尸体视觉反馈及倒地队友标记。联机敌人血条依赖 DamageSync；本插件不实现自定义网络同步，也不依赖或改动 CombatPanel。
 
-## 本版变化
+## 从 1.2.21 升级
 
-- 玩家原生血条下新增右端对齐的 Minor / Elite / Boss 图标和完整累计击杀数，复用本地致死 credit、Ledger 去重与 `KillPresentation.Tier`。F9 不增加真实计数，离开远征清零。`KillCounter/Enabled` 默认 `true`，独立隐藏不阻止累计。
-- 修复 1.2.20 计数不显示：核对 CellUI 手动画布的根层级、裁剪层、完整 viewport 和窗口像素后投影，不移动原生血条，不使用主相机猜位置。目标/画布/窗口像素不一致时明确 held 并输出尺寸。
-- 消融在原清理截止前提供最多两次有限预约，仍保留并发 2、第三方接管时让位、不强还 playing/unknown；增加全量汇总、重复日志限流与有效网格检查。
-- 2026-11-17 TOA Pure 实测：计数 HUD 放置成功、三张图标资源齐全，正常通关返回大厅，作者反馈计数基本正常。本模组 426 行日志无 Warning/Error/Fatal。
+- **尸体淡出黑屏防护。** 原生淡出不再使用带阴影渲染注册、属于已有淡出副本或无法安全判定的输入。找不到安全的渲染器就按原清理时机处理，不为播放特效强行复制对象。`Corpse/FadeEffect` 仍默认开启，可单独关闭。
+- **硬直行。** 焦点敌人血条下用浅绿 `#78DCA0` 分列四肢、躯体耐久与普通硬直剩余伤害；无法读取显示 `—`。不需要这行时关闭 `EnemyBar/ShowStaggerLine`，不影响血条或伤害数字。
+- **硬直绿字与霰弹。** 只把本机本次确实触发非致死 Light/Heavy 硬直的伤害正文标绿，证据不足保留原色。合并霰弹只标绿触发的部分：例如 `12 + 6` 是同一枪对同一目标的 18 点伤害，不是再加 6 点。弱点、护甲标记与棱彩、档位描边保留。
 
-该场景由 DBO 接管消融，KillFeed 正常让位（skipped=1636、failed=0）；没有执行本插件原生消融，因此不据此声称无 DBO 环境的原生 NRE 已根治，也不把初始零值回执当作所有累计数的逐项验证。API 边界绘制重放不是 Unity 实机渲染。
+**实测边界：** Survival 的 FX.3 Overload 开启淡出后未复现黑屏，有 4 条淡出开始回执；同局仍有 1 条 `Decay.InitializeInternal` 原生空引用。调用方和画面影响尚未确定，需复测；这不是“所有黑屏或原生异常已修复”的结论。本局未验证棱彩与档位的叠加画面。
 
-完整功能、截图、配置与历史记录见 [包内介绍](Thunderstore/README.md) 和 [更新日志](CHANGELOG.md)。已有截图不展示新增计数 HUD。
+完整功能与历史记录见 [包内介绍](Thunderstore/README.md) 和 [更新日志](CHANGELOG.md)。
 
 ## 安装
 
@@ -34,9 +33,8 @@ GTFO 客户端反馈插件：击杀卡片、头顶图标、伤害数字、命中
 
 - 生产源码位于 `src/HawChow.GTFOKillFeed/`，构建入口为 `src/GTFOKillFeed.csproj`。
 - `global.json` 保持 SDK **6.0.428**、`rollForward=latestPatch`；不分发 GTFO、BepInEx 或 interop DLL。
-- 按 [复现说明](docs/REPRODUCE.md) 提供自己的 `GTFO_DIR`。发布 DLL 采用真实 interop 构建，不以反编译桩替代运行依赖。
-- `tests/GTFOKillFeed.Smoke`：1,409 条策略断言；`tests/GTFOKillFeed.HudReplay`：20 条生产 Tick/Draw API 边界重放；`tests/GTFOKillFeed.ConfigSmoke`：97 条真实 BepInEx 配置断言。
-- 保留 `tests/KillFeed.Tests` 与 `tests/KillFeed.Policy.Tests` 两组回归。构建、测试与运行边界分别记录，离线通过不等于覆盖所有模组图和多人情境。
+- 按 [复现说明](docs/REPRODUCE.md) 提供自己的 `GTFO_DIR`。公开源码用 Survival 真实 interop 重建的 DLL 与实测 DLL 的 SHA256 相同。
+- 五组测试：策略 Smoke 1,542 条、HUD API 边界重放 20 条、真实 BepInEx 配置 97 条、策略回归 424 条、组合回归 407 条；另有 `KillFeed.IlGuard` 和 9 个 PowerShell IL 检查。它们验证构建和接线，不代替 Unity 实机画面。
 - `Thunderstore/` 保存实际发布 ZIP 的文档与图标原字节；根 README 是源码仓说明，不是 ZIP 中 README 的替代副本。
 
 ## 反馈
