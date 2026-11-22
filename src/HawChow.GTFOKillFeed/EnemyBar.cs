@@ -40,9 +40,15 @@ internal static class EnemyBar
     // 1.2.22: its own style and content so the stagger row can never borrow (or disturb) the name, weakspot
     // or C-Foam labels; the colour is the fixed light green from BarPolicy, not a configurable bar colour.
     private static readonly GUIContent StaggerContent = new();
+    // 1.2.25: the row's line buffer, filled from the present tokens only, so an omitted item can never leave an empty
+    // line and drawing a wrapped row does not allocate. IMGUI is single-threaded, so one buffer is enough.
+    private static readonly string[] StaggerLines = new string[BarPolicy.MaxStaggerTokens];
     private static GUIStyle _staggerStyle;
     private static BarPolicy.StaggerValues _stagger = BarPolicy.StaggerValues.None;
     private static string _labelStagger = string.Empty;
+    // 1.2.25: which enemy the cached row describes. A different id means the row is not this target's numbers, so it is
+    // recomputed before the next draw instead of being reused inside the 0.35 s refresh window.
+    private static int _staggerTargetId = int.MinValue;
     // 1.2.23: the name label's real first-glyph x (rect + alignment + padding/content offset), shared by the green
     // row so it starts exactly under the monster name; invalid when the name is hidden, which makes the row use the
     // health bar's own left edge instead.
@@ -112,6 +118,7 @@ internal static class EnemyBar
         _labelFoamMode = false;
         _stagger = BarPolicy.StaggerValues.None;
         _labelStagger = string.Empty;
+        _staggerTargetId = int.MinValue;
         _nameOriginValid = false;
         _nameOriginX = 0f;
         EnemyFocus.Reset();
@@ -160,6 +167,12 @@ internal static class EnemyBar
             {
                 _shownFor = 0f;
                 _hasAnchor = false;
+                // 1.2.25: a new target must never inherit the previous enemy's green row - not even for the fraction of a
+                // frame between the switch and the refresh below. The row drops to "no item" FIRST, so a throwing read
+                // leaves an empty row instead of the old numbers.
+                _stagger = BarPolicy.StaggerValues.None;
+                _labelStagger = string.Empty;
+                _staggerTargetId = int.MinValue;
                 ReadHealth(found, out _health, out _maxHealth);
                 _ghost = BarPolicy.FillFraction(_health, _maxHealth);
             }
@@ -172,7 +185,7 @@ internal static class EnemyBar
             bool languageChanged = !string.Equals(_partLanguage, language, StringComparison.OrdinalIgnoreCase);
             bool glueMode = EnemyFocus.GlueGunWielded;
             bool glueModeChanged = glueMode != _glueMode;
-            if (switched || languageChanged || glueModeChanged || now - _weakspotRefreshAt >= WeakspotRefreshSeconds)
+            if (switched || _staggerTargetId != id || languageChanged || glueModeChanged || now - _weakspotRefreshAt >= WeakspotRefreshSeconds)
             {
                 _glueMode = glueMode;
                 if (_glueMode)
@@ -187,11 +200,13 @@ internal static class EnemyBar
                     _foamTag = string.Empty;
                 }
                 _partLanguage = language;
-                // 1.2.22: the stagger row is refreshed on the same 0.35 s cadence as the weakspot tags, from
-                // THIS enemy only (no scene scan, no extra network read), and formatted once here so drawing
-                // never allocates or recomputes.
+                // 1.2.22/1.2.25: the stagger row is refreshed on the same 0.35 s cadence as the weakspot tags, from THIS
+                // enemy only (no scene scan, no extra network read), and formatted once here so drawing never allocates
+                // or recomputes. `_staggerTargetId` records WHICH enemy the current row describes, so the row can only
+                // ever be the current target's numbers - and it is empty on the very first frame after a switch.
                 _stagger = ReadStagger(found);
                 _labelStagger = BarPolicy.StaggerLine(_stagger, language);
+                _staggerTargetId = id;
                 _weakspotRefreshAt = now;
             }
             if (switched && FocusAcquiredBudget.TryUse(12))
@@ -570,13 +585,20 @@ internal static class EnemyBar
         GUI.color = color;
         GUI.DrawTexture(rect, Texture2D.whiteTexture);
     }
-    // 1.2.23: one row directly under the bar, LEFT-ANCHORED to the monster name's real first glyph (or to the
+    // 1.2.23/1.2.25: one row directly under the bar, LEFT-ANCHORED to the monster name's real first glyph (or to the
     // health bar's left edge when ShowName is off). It reuses the existing shadow and fade alpha through
     // DrawLabelText, owns its font size, scales down before wrapping, wraps at group boundaries and clamps a
-    // still-too-wide token with a visible ellipsis. It is never dropped merely because the screen is narrow.
+    // still-too-wide token with a visible ellipsis. 1.2.25: an item without a confirmable value is OMITTED, so a row with
+    // no item is not drawn at all (no empty line and no height reserved under the bar), the wrap plan can never produce
+    // an empty line, and the row is only ever painted for a LIVE target - during the bar's fade-out after the target was
+    // lost there is no enemy behind the numbers any more, so the green row disappears immediately instead of lingering
+    // with the previous target's values.
     private static void DrawStaggerRow(Rect bar, int screenWidth, int screenHeight, float opacity, Color shadowColor)
     {
         if (Plugin.EnemyBarShowStaggerLine != null && !Plugin.EnemyBarShowStaggerLine.Value) return;
+        // No live target: nothing to describe. Nothing is drawn and no space is taken.
+        if (!_haveTarget) return;
+        // Nothing to show means nothing is drawn: no dash, no placeholder and no space taken.
         if (string.IsNullOrEmpty(_labelStagger) || _staggerStyle == null) return;
         if (screenWidth <= 0 || screenHeight <= 0) return;
         float scale = BarPolicy.ResolutionScale(screenHeight);
@@ -595,27 +617,49 @@ internal static class EnemyBar
 
         string language = _partLanguage ?? "zh";
         BarPolicy.StaggerTokens(_stagger, language, out string limbToken, out string torsoToken, out string normalToken);
-        string full = limbToken + torsoToken + normalToken;
+        int count = 0;
+        if (limbToken.Length > 0) StaggerLines[count++] = limbToken;
+        if (torsoToken.Length > 0) StaggerLines[count++] = torsoToken;
+        if (normalToken.Length > 0) StaggerLines[count++] = normalToken;
+        if (count == 0) return;
+        // _labelStagger is exactly the concatenation of the present tokens, so the single-line text is reused instead of
+        // being rebuilt every frame.
+        string full = _labelStagger;
         int font = baseFont;
         while (font > minFont && MeasureAt(full, font) > available) font--;
         float fullWidth = MeasureAt(full, font);
-        int rows = BarPolicy.StaggerRows(available, fullWidth,
-            MeasureAt(limbToken + torsoToken, font),
-            Mathf.Max(MeasureAt(limbToken, font), Mathf.Max(MeasureAt(torsoToken, font), MeasureAt(normalToken, font))));
-        string[] lines = rows == 1 ? new[] { full }
-            : rows == 2 ? new[] { limbToken + torsoToken, normalToken }
-            : new[] { limbToken, torsoToken, normalToken };
-        float width = 0f;
-        for (int i = 0; i < lines.Length; i++)
+        float widest = 0f;
+        for (int i = 0; i < count; i++)
         {
-            lines[i] = ClampToWidth(lines[i], font, available);
-            float measured = MeasureAt(lines[i], font);
+            float measured = MeasureAt(StaggerLines[i], font);
+            if (measured > widest) widest = measured;
+        }
+        float firstLineWidth = count > 2 ? MeasureAt(StaggerLines[0] + StaggerLines[1], font) : fullWidth;
+        int rows = BarPolicy.StaggerRows(available, fullWidth, firstLineWidth, widest, count);
+        int lines = count;
+        if (rows <= 1)
+        {
+            StaggerLines[0] = full;
+            lines = 1;
+        }
+        else if (rows == 2 && count > 2)
+        {
+            string head = StaggerLines[0] + StaggerLines[1];
+            StaggerLines[0] = head;
+            StaggerLines[1] = StaggerLines[2];
+            lines = 2;
+        }
+        float width = 0f;
+        for (int i = 0; i < lines; i++)
+        {
+            StaggerLines[i] = ClampToWidth(StaggerLines[i], font, available);
+            float measured = MeasureAt(StaggerLines[i], font);
             if (measured > width) width = measured;
         }
 
         _staggerStyle.fontSize = font;
         float rowHeight = font + 8f * scale;
-        float totalHeight = rowHeight * lines.Length;
+        float totalHeight = rowHeight * lines;
         float y = BarPolicy.StaggerRowY(bar.yMax, screenHeight);
         float bottom = screenHeight - BarPolicy.StaggerRowMargin(screenHeight);
         if (y + totalHeight > bottom) y = Mathf.Max(bar.yMax + 1f, bottom - totalHeight);
@@ -624,9 +668,9 @@ internal static class EnemyBar
         if (x < 0f) x = 0f;
         BarPolicy.StaggerInk(out float staggerRed, out float staggerGreen, out float staggerBlue);
         Color body = new Color(staggerRed, staggerGreen, staggerBlue, 1f);
-        for (int i = 0; i < lines.Length; i++)
+        for (int i = 0; i < lines; i++)
         {
-            StaggerContent.text = lines[i];
+            StaggerContent.text = StaggerLines[i];
             DrawLabelText(StaggerContent, new Rect(x, y + i * rowHeight, width + scale, rowHeight),
                 _staggerStyle, body, shadowColor, opacity, scale);
         }
@@ -655,85 +699,114 @@ internal static class EnemyBar
         return low <= 0 ? "…" : text.Substring(0, low) + "…";
     }
 
-    // 1.2.22/1.2.23: the two part groups and the normal hitreact, read from the focused enemy only (no scene scan,
-    // no network).
-    //   limbs/torso - every live limb the GAME treats as destroyable: the same predicate the shipped dismemberment
-    //            path uses (CD_CharacterDestructionCollider.HasDestruction() and not IsDestroyed). The group comes
-    //            from that same collider's anatomical field m_bodyPart (CharacterDestruction.CD_BodypartType):
-    //            upper/lower arm and upper/lower leg -> 四肢, chest/stomach/hips -> 躯体. The head limb is skipped by
-    //            pointer AND by part; Unspecified/Head/any mod value is refused, never guessed from a number, an
-    //            array index, a GameObject name or the enemy id. Current durability (m_health) and fixed capacity
-    //            (m_healthMax) stay separate; a group with no live breakable part is the dash, so a body with only
-    //            whole-body hitreact cannot fake a torso value.
-    //   normal - the game's own normal-hitreact budget, read live: GameData.HealthData.DamageUntilHitreact minus the
-    //            running accumulator Dam_EnemyDamageBase.m_damBuildToHitreact (both through the same properties a
-    //            MTFO/EEC-edited install uses). Native proof that this is an ABSOLUTE damage amount compared against
-    //            an accumulated damage sum, with no ratio and no HealthMax factor, is quoted in BarPolicy
-    //            (ProcessReceivedDamage RVA 0x137E570: addss [rbx+0x150] ... comiss [rax+0x14] ... jae ... reset).
-    //            The row therefore prints the remaining damage; if either side is unreadable the row prints the
-    //            no-data dash and one bounded diagnostic carries the raw values for later reconciliation.
+    // 1.2.22/1.2.23/1.2.25: the two part groups and the normal hitreact, read from the focused enemy only (no scene
+    // scan, no network). Both are THEORETICAL MAXIMUMS - nothing here reads a remaining or current value.
+    //   limbs/torso - every LIVE limb the GAME treats as destroyable: the same predicate the shipped dismemberment path
+    //            uses (CD_CharacterDestructionCollider.HasDestruction() and not IsDestroyed). The group comes from that
+    //            same collider's anatomical field m_bodyPart (CharacterDestruction.CD_BodypartType): upper/lower arm and
+    //            upper/lower leg -> 四肢, chest/stomach/hips -> 躯体. The head limb is skipped by pointer AND by part;
+    //            Unspecified/Head/any mod value is refused, never guessed from a number, an array index, a GameObject
+    //            name or the enemy id. The value is the fixed capacity the game gave that part (m_healthMax), NOT its
+    //            current durability (m_health): the capacity is the damage a full part needs to break, while the current
+    //            durability is a remaining amount - and it is the dismemberment threshold, not the normal hitreact.
+    //            A group with no live breakable part is omitted, so a body with only whole-body hitreact cannot fake a
+    //            torso value.
+    //            The game's own limb-destruction switch (GameData.HealthData.HitreactOnLimbDestruction) is honoured: with
+    //            ES_HitreactType.None a broken limb provably plays no hitreact, so no part threshold is claimed at all.
+    //   normal - GameData.HealthData.DamageUntilHitreact itself, read independently of the parts: it is the enemy's own
+    //            ABSOLUTE damage budget (native proof quoted in BarPolicy, ProcessReceivedDamage RVA 0x137E570), not a
+    //            ratio and not scaled by HealthMax. The running accumulator (Dam_EnemyDamageBase.m_damBuildToHitreact) is
+    //            deliberately NOT read here: subtracting it would print a remaining amount, and the accumulator is still
+    //            required - but only by the real-hit green digits (1.2.24), which keeps its own read path untouched.
+    // A part or threshold that cannot be confirmed (no live part, unknown/mod part, non-finite or non-positive value) is
+    // OMITTED, never a dash and never a 0.
     private static BarPolicy.StaggerValues ReadStagger(EnemyAgent enemy)
     {
-        var limbGroup = new BarPolicy.StaggerGroupBuilder();
-        var torsoGroup = new BarPolicy.StaggerGroupBuilder();
-        try
-        {
-            Dam_EnemyDamageBase damage = enemy.Damage;
-            var limbs = damage != null ? damage.DamageLimbs : null;
-            long headPointer = 0;
-            try { var head = enemy.m_headLimb; if (head != null && head.Pointer != IntPtr.Zero) headPointer = head.Pointer.ToInt64(); }
-            catch (Exception error) { Warn("stagger-head", error.Message); }
-            if (limbs != null)
-            {
-                for (int i = 0; i < limbs.Length; i++)
-                {
-                    var limb = limbs[i];
-                    if (limb == null) continue;
-                    bool destroyed;
-                    float remaining, capacity;
-                    int bodyPart;
-                    try
-                    {
-                        if (headPointer != 0 && limb.Pointer != IntPtr.Zero && limb.Pointer.ToInt64() == headPointer) continue;
-                        destroyed = limb.IsDestroyed;
-                        var destruction = limb.m_destruction;
-                        if (destruction == null || !destruction.HasDestruction()) continue;   // not a destroyable limb
-                        bodyPart = (int)destruction.m_bodyPart;                                 // anatomical enum, not eLimbDamageType
-                        remaining = limb.m_health;
-                        capacity = limb.m_healthMax;
-                    }
-                    catch (Exception error) { Warn("stagger-limb", error.Message); continue; }
-                    if (destroyed) continue;
-                    BarPolicy.StaggerBodyGroup group = BarPolicy.BodyGroup(bodyPart);
-                    if (group == BarPolicy.StaggerBodyGroup.Limbs) limbGroup.Add(remaining, capacity);
-                    else if (group == BarPolicy.StaggerBodyGroup.Torso) torsoGroup.Add(remaining, capacity);
-                    else if (LogStaggerPartBudget.TryUse(4))
-                        Plugin.Instance?.Log.LogInfo($"[BAR] stagger=part;grouped=no;bodyPart={bodyPart};limbIndex={i};note=unspecified-head-or-mod-part-not-a-limb-or-torso");
-                }
-            }
-        }
-        catch (Exception error) { Warn("stagger-limbs", error.Message); }
-
-        bool hasNormal = false;
-        float threshold = 0f, accumulated = 0f, normalLeft = 0f;
+        // The balancing block is read first: its limb-destruction hitreact switch decides whether a part threshold may
+        // be claimed at all, and its DamageUntilHitreact is the normal item.
+        GameData.HealthData data = null;
+        int limbHitreact = BarPolicy.HitreactUnspecified;
+        bool limbHitreactRead = false;
         try
         {
             GameData.EnemyBalancingDataBlock balancing = enemy.EnemyBalancingData;
-            GameData.HealthData data = balancing != null ? balancing.Health : null;
-            Dam_EnemyDamageBase damage = enemy.Damage;
-            if (data != null && damage != null)
+            data = balancing != null ? balancing.Health : null;
+            if (data != null)
+            {
+                limbHitreact = (int)data.HitreactOnLimbDestruction;   // ES_HitreactType, pinned in BarPolicy
+                limbHitreactRead = true;
+            }
+        }
+        catch (Exception error) { Warn("stagger-hitreact-switch", error.Message); }
+
+        var limbGroup = new BarPolicy.StaggerGroupBuilder();
+        var torsoGroup = new BarPolicy.StaggerGroupBuilder();
+        // 1.2.25: the part items need POSITIVE evidence. Only an authored stagger reaction (Micro/Light/Heavy) allows the
+        // capacity of a live breakable part to be claimed; everything else omits both part items:
+        //   * None (1)                              - the game plays no hitreact when a limb breaks;
+        //   * Unspecified (0)                       - unauthored/unknown: not proof of anything. This is explicitly NOT a
+        //                                             claim that the enemy is immune - the item is simply not shown;
+        //   * ToDeath (5)/InstantRagdollDeath (6)   - the reaction is the death itself, not a stagger threshold;
+        //   * any unknown/mod value, and an unreadable switch, are equally unproven and equally omitted.
+        if (!limbHitreactRead || !BarPolicy.LimbBreakIsHitreact(limbHitreact))
+        {
+            if (LogStaggerPartBudget.TryUse(4))
+                Plugin.Instance?.Log.LogInfo($"[BAR] stagger=part;shown=no;reason={(limbHitreactRead ? "no-confirmed-limb-hitreact" : "switch-unreadable")};hitreactOnLimbDestruction={limbHitreact};note=parts-omitted-not-immune");
+        }
+        else
+        {
+            try
+            {
+                Dam_EnemyDamageBase damage = enemy.Damage;
+                var limbs = damage != null ? damage.DamageLimbs : null;
+                long headPointer = 0;
+                try { var head = enemy.m_headLimb; if (head != null && head.Pointer != IntPtr.Zero) headPointer = head.Pointer.ToInt64(); }
+                catch (Exception error) { Warn("stagger-head", error.Message); }
+                if (limbs != null)
+                {
+                    for (int i = 0; i < limbs.Length; i++)
+                    {
+                        var limb = limbs[i];
+                        if (limb == null) continue;
+                        bool destroyed;
+                        float capacity;
+                        int bodyPart;
+                        try
+                        {
+                            if (headPointer != 0 && limb.Pointer != IntPtr.Zero && limb.Pointer.ToInt64() == headPointer) continue;
+                            destroyed = limb.IsDestroyed;
+                            var destruction = limb.m_destruction;
+                            if (destruction == null || !destruction.HasDestruction()) continue;   // not a destroyable limb
+                            bodyPart = (int)destruction.m_bodyPart;                                 // anatomical enum, not eLimbDamageType
+                            capacity = limb.m_healthMax;                                            // fixed max, never m_health
+                        }
+                        catch (Exception error) { Warn("stagger-limb", error.Message); continue; }
+                        if (destroyed) continue;
+                        BarPolicy.StaggerBodyGroup group = BarPolicy.BodyGroup(bodyPart);
+                        if (group == BarPolicy.StaggerBodyGroup.Limbs) limbGroup.Add(capacity);
+                        else if (group == BarPolicy.StaggerBodyGroup.Torso) torsoGroup.Add(capacity);
+                        else if (LogStaggerPartBudget.TryUse(4))
+                            Plugin.Instance?.Log.LogInfo($"[BAR] stagger=part;grouped=no;bodyPart={bodyPart};limbIndex={i};note=unspecified-head-or-mod-part-not-a-limb-or-torso");
+                    }
+                }
+            }
+            catch (Exception error) { Warn("stagger-limbs", error.Message); }
+        }
+
+        bool hasNormal = false;
+        float threshold = 0f;
+        try
+        {
+            if (data != null)
             {
                 threshold = data.DamageUntilHitreact;
-                accumulated = damage.m_damBuildToHitreact;
-                // The game's own formula: the field is an absolute damage budget, so what a hit still needs is
-                // max(0, threshold - accumulator). No ratio, no HealthMax factor, no ceiling rounding.
-                hasNormal = BarPolicy.StaggerRemaining(threshold, accumulated, out normalLeft);
+                hasNormal = BarPolicy.IsUsableThreshold(threshold);
             }
         }
         catch (Exception error) { Warn("stagger-hitreact", error.Message); }
-        if (!hasNormal && LogStaggerBudget != null && LogStaggerBudget.TryUse(4))
-            Plugin.Instance?.Log.LogInfo($"[BAR] stagger=normal;shown=no;reason={(threshold > 0f ? "accumulator-unreadable" : "config-absent")};damageUntilHitreact={threshold:0.###};damBuildToHitreact={accumulated:0.###};note=dash-instead-no-conversion-applied");
-        return new BarPolicy.StaggerValues(limbGroup.Build(), torsoGroup.Build(), hasNormal, normalLeft);
+        if (!hasNormal && LogStaggerBudget.TryUse(4))
+            Plugin.Instance?.Log.LogInfo($"[BAR] stagger=normal;shown=no;reason={(data != null ? "threshold-unusable" : "config-absent")};damageUntilHitreact={threshold:0.###};note=the-threshold-itself-is-shown-no-subtraction");
+        return new BarPolicy.StaggerValues(limbGroup.Build(), torsoGroup.Build(), hasNormal, hasNormal ? threshold : 0f);
     }
 
 

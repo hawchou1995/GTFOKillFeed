@@ -1,13 +1,17 @@
 using System;
+using System.Globalization;
 using HawChow.GTFOKillFeed;
 
-// 1.2.23 regression: the anatomy-classified stagger row under the focused-enemy bar. Everything asserted here is a
-// production function the shipped read/draw path calls (BarPolicy.BodyGroup, StaggerGroupBuilder/GroupValue,
-// StaggerTokens/StaggerLine, StaggerRemaining, DamageAmount, StaggerFontPixels, StaggerRows, StaggerAvailableWidth,
-// StaggerRowLeft, TextOriginX), so a wrong body part, a max-for-current swap, a fabricated 0/immune, a centred row,
-// a lost pad or an off-screen row fails here instead of only looking right in a source grep. The compiled wiring
-// itself (which style/content/colour/fields the row uses) is pinned by scripts/Test-EnemyBarStaggerIl.ps1 on the
-// real assembly.
+// 1.2.25 regression: the anatomy-classified stagger row under the focused-enemy bar shows ONE number per item - the
+// theoretical MAXIMUM threshold - and OMITS an item it cannot confirm from positive evidence (never a dash, never a 0,
+// no blank line). Everything asserted here is a production function the shipped read/draw path calls
+// (BarPolicy.BodyGroup, LimbBreakIsHitreact, StaggerGroupBuilder/GroupValue, StaggerTokens/StaggerLine/
+// StaggerTokenCount, ThresholdValue, IsUsableThreshold, StaggerFontPixels, StaggerRows, StaggerAvailableWidth,
+// StaggerRowLeft, TextOriginX), so a range instead of a maximum, a swapped current/maximum value, a resurrected
+// remaining/current combination, a fabricated 0, a clamped "ceiling" number, a centred row, a blank line or an
+// off-screen row fails here instead of only looking right in a source grep. The compiled wiring itself (which
+// style/content/colour/fields the row uses, that the accumulator is NOT read, and that a stale target cannot carry the
+// row) is pinned by scripts/Test-EnemyBarStaggerIl.ps1 and scripts/Verify.ps1 on the real assembly/source.
 internal static class EnemyBarStaggerTests
 {
     // The focused-enemy bar's own weakspot default, duplicated on purpose so a change to either colour has to be a
@@ -17,81 +21,163 @@ internal static class EnemyBarStaggerTests
     private const float WeakspotBlue = 0.298f;
 
     private static BarPolicy.StaggerValues Values(BarPolicy.StaggerGroupBuilder limbs, BarPolicy.StaggerGroupBuilder torso,
-        bool hasNormal, float normalRemaining)
-        => new BarPolicy.StaggerValues(limbs.Build(), torso.Build(), hasNormal, normalRemaining);
+        bool hasNormal, float normalThreshold)
+        => new BarPolicy.StaggerValues(limbs.Build(), torso.Build(), hasNormal, normalThreshold);
 
     internal static void Run(Action<bool, string> check)
     {
-        // ---- the requested shape: current durability / fixed capacity for each anatomical group -----------------
-        var bothLimbs = new BarPolicy.StaggerGroupBuilder();
-        bothLimbs.Add(40f, 40f);
-        var chest = new BarPolicy.StaggerGroupBuilder();
-        chest.Add(30f, 50f);
-        var both = Values(bothLimbs, chest, true, 80f);
-        check(BarPolicy.StaggerLine(both, "zh") == "[四肢：40/40][躯体：30/50][普通(剩余)：80]",
-            "the row reads [四肢：current/capacity][躯体：current/capacity][普通(剩余)：remaining]");
-        check(BarPolicy.StaggerLine(both, "en") == "[Limb 40/40][Torso 30/50][Hitreact(left) 80]",
+        // ---- the requested shape: the theoretical maximum of each item, nothing else ----------------------------
+        var limbs40 = new BarPolicy.StaggerGroupBuilder();
+        limbs40.Add(40f);
+        var torso50 = new BarPolicy.StaggerGroupBuilder();
+        torso50.Add(50f);
+        var full = Values(limbs40, torso50, true, 80f);
+        check(BarPolicy.StaggerLine(full, "zh") == "[四肢：40][躯体：50][普通(阈值)：80]",
+            "the row reads [四肢：max][躯体：max][普通(阈值)：threshold]");
+        check(BarPolicy.StaggerLine(full, "en") == "[Limb 40][Torso 50][Hitreact(max) 80]",
             "the same values follow the configured language instead of hard-coding Chinese");
+        check(BarPolicy.StaggerTokenCount(full) == 3, "a row with three confirmable items counts three tokens");
 
-        // ---- 15 vs 40: the current value and the fixed capacity are different facts ------------------------------
-        var fifteenOfForty = new BarPolicy.StaggerGroupBuilder();
-        fifteenOfForty.Add(15f, 40f);
-        var torsoOnly = new BarPolicy.StaggerGroupBuilder();
-        torsoOnly.Add(25f, 80f);
-        check(BarPolicy.StaggerLine(Values(fifteenOfForty, torsoOnly, true, 80f), "zh")
-            == "[四肢：15/40][躯体：25/80][普通(剩余)：80]",
-            "a limb with 15 current and 40 capacity is 15/40, never 40/40 or 40/15: current and fixed max stay apart");
+        // ---- ONE maximum per group: 40 and 60 print 60, never a range and never a minimum ------------------------
+        var spread = new BarPolicy.StaggerGroupBuilder();
+        spread.Add(40f);
+        spread.Add(60f);
+        check(BarPolicy.GroupValue(spread.Build()) == "60",
+            "a group whose parts have 40 and 60 prints the maximum (60), never the range 40-60 or the minimum 40");
+        var mirrored = new BarPolicy.StaggerGroupBuilder();
+        mirrored.Add(60f);
+        mirrored.Add(40f);
+        check(BarPolicy.GroupValue(mirrored.Build()) == "60",
+            "the maximum does not depend on the order the game reports the parts in");
+        var torsoSpread = new BarPolicy.StaggerGroupBuilder();
+        torsoSpread.Add(50f);
+        torsoSpread.Add(80f);
+        check(BarPolicy.GroupValue(torsoSpread.Build()) == "80",
+            "the torso group keeps its own maximum");
+        check(!BarPolicy.StaggerLine(Values(spread, torsoSpread, false, 0f), "zh").Contains("-"),
+            "no item may render a 40-60 style range: the player asked for the maximum only");
+        var half = new BarPolicy.StaggerGroupBuilder();
+        half.Add(40f);
+        check(BarPolicy.GroupValue(half.Build()) == "40",
+            "a limb with capacity 40 shows 40 and never a current/capacity pair such as 15/40");
+        check(!BarPolicy.StaggerLine(Values(half, new BarPolicy.StaggerGroupBuilder(), true, 80f), "zh").Contains("/"),
+            "no item of the row may contain a current/remaining/ceiling combination");
 
-        // ---- a spread inside one group is a real range, never an average ---------------------------------------
-        var limbs = new BarPolicy.StaggerGroupBuilder();
-        limbs.Add(15f, 40f);
-        limbs.Add(20f, 60f);
-        var torso = new BarPolicy.StaggerGroupBuilder();
-        torso.Add(25f, 80f);
-        torso.Add(30f, 50f);
-        check(BarPolicy.GroupValue(limbs.Build()) == "15-20/40-60",
-            "different arms/legs report the real current and capacity ranges (15-20/40-60)");
-        check(BarPolicy.GroupValue(torso.Build()) == "25-30/50-80",
-            "different chest/stomach/hips report their own independent ranges");
-        check(BarPolicy.StaggerLine(Values(limbs, torso, true, 80f), "zh")
-            == "[四肢：15-20/40-60][躯体：25-30/50-80][普通(剩余)：80]",
-            "the two groups aggregate independently in one row");
-
-        // ---- absent data is a dash, never 0 and never "immune" -------------------------------------------------
+        // ---- an item without confirmable evidence is OMITTED, never a dash and never a 0 ------------------------
         var noTorso = new BarPolicy.StaggerGroupBuilder();
-        noTorso.Add(15f, 40f);
-        var noLimbs = new BarPolicy.StaggerGroupBuilder();
-        noLimbs.Add(25f, 80f);
-        var nothing = BarPolicy.StaggerValues.None;
-        check(BarPolicy.StaggerLine(Values(noTorso, new BarPolicy.StaggerGroupBuilder(), true, 80f), "zh")
-            == "[四肢：15/40][躯体：—][普通(剩余)：80]",
-            "a body with no breakable torso part prints — instead of borrowing its whole-body hitreact");
-        check(BarPolicy.StaggerLine(Values(new BarPolicy.StaggerGroupBuilder(), noLimbs, true, 80f), "zh")
-            == "[四肢：—][躯体：25/80][普通(剩余)：80]",
-            "a body with no breakable limb prints — while the torso value still shows");
-        check(BarPolicy.StaggerLine(nothing, "zh") == "[四肢：—][躯体：—][普通(剩余)：—]",
-            "with no data at all every slot is explicitly empty, not 0");
-        check(!BarPolicy.StaggerLine(nothing, "zh").Contains("：0") && !BarPolicy.StaggerLine(nothing, "zh").Contains("免疫"),
-            "an absent value is a dash: neither a fake 0 nor an invented immunity");
+        noTorso.Add(40f);
+        string limbsOnly = BarPolicy.StaggerLine(Values(noTorso, new BarPolicy.StaggerGroupBuilder(), false, 0f), "zh");
+        check(limbsOnly == "[四肢：40]",
+            "a body without a confirmable torso/normal item prints only the limb group");
+        check(BarPolicy.StaggerTokenCount(Values(noTorso, new BarPolicy.StaggerGroupBuilder(), false, 0f)) == 1,
+            "one confirmable item counts one token, so the wrap plan cannot reserve a line for it");
+        var torsoOnly = new BarPolicy.StaggerGroupBuilder();
+        torsoOnly.Add(30f);
+        check(BarPolicy.StaggerLine(Values(new BarPolicy.StaggerGroupBuilder(), torsoOnly, true, 12f), "zh")
+            == "[躯体：30][普通(阈值)：12]",
+            "a body without a confirmable limb item still shows the torso and normal items");
+        check(BarPolicy.StaggerLine(Values(new BarPolicy.StaggerGroupBuilder(), new BarPolicy.StaggerGroupBuilder(), true, 80f), "zh")
+            == "[普通(阈值)：80]",
+            "with no part at all only the independent normal threshold is shown");
+        check(BarPolicy.StaggerLine(Values(noTorso, torsoOnly, true, 80f), "en") == "[Limb 40][Torso 30][Hitreact(max) 80]",
+            "all three items in the English row");
 
-        // ---- broken/unreadable current and a missing capacity stay honest --------------------------------------
+        // ---- nothing confirmable at all: an EMPTY row, which the caller must not draw or reserve space for ----
+        var nothing = BarPolicy.StaggerValues.None;
+        check(BarPolicy.StaggerLine(nothing, "zh") == string.Empty && BarPolicy.StaggerLine(nothing, "en") == string.Empty,
+            "with no confirmable item the row is the empty string, so nothing is drawn and nothing is reserved");
+        check(BarPolicy.StaggerTokenCount(nothing) == 0, "no confirmable item means zero tokens, i.e. no line at all");
+        foreach (string empty in new[] { BarPolicy.StaggerLine(nothing, "zh"), limbsOnly })
+        {
+            check(!empty.Contains("\u2014") && !empty.Contains("：0]") && !empty.Contains("免疫"),
+                "an omitted item is neither a dash, nor a fabricated 0, nor the C-Foam immune sentinel");
+        }
+
+        // ---- broken/unreadable values never build a group ------------------------------------------------------
         var broken = new BarPolicy.StaggerGroupBuilder();
-        broken.Add(0f, 40f);
-        broken.Add(-5f, 40f);
-        broken.Add(float.NaN, 40f);
-        broken.Add(float.PositiveInfinity, 40f);
-        check(!broken.Build().HasValue && BarPolicy.GroupValue(broken.Build()) == "—",
-            "a destroyed/broken limb (0), a negative, NaN or Infinity current value is not a live group value");
-        var unknownCapacity = new BarPolicy.StaggerGroupBuilder();
-        unknownCapacity.Add(15f, float.NaN);
-        check(BarPolicy.GroupValue(unknownCapacity.Build()) == "15/—",
-            "an unreadable fixed capacity keeps the current value and dashes only the capacity side");
-        check(BarPolicy.RequiredDamage(0f) == "—" && BarPolicy.RequiredDamage(-5f) == "—"
-            && BarPolicy.RequiredDamage(float.NaN) == "—" && BarPolicy.RequiredDamage(float.PositiveInfinity) == "—",
-            "0, negative, NaN and Infinity never render as a part number (and never as immunity)");
-        check(BarPolicy.RequiredDamage(0.4f) == "1" && BarPolicy.RequiredDamage(39.5f) == "40"
-            && BarPolicy.RequiredDamage(40f) == "40",
-            "current durability is rounded up, so a part with 0.4 left asks for 1 and not for 0");
+        broken.Add(0f);
+        broken.Add(-5f);
+        broken.Add(float.NaN);
+        broken.Add(float.PositiveInfinity);
+        broken.Add(float.NegativeInfinity);
+        check(!broken.Build().HasValue && BarPolicy.GroupValue(broken.Build()) == string.Empty,
+            "a 0, a negative, NaN or Infinity capacity is not a group value, so the group is omitted");
+        var mixedGroup = new BarPolicy.StaggerGroupBuilder();
+        mixedGroup.Add(float.NaN);
+        mixedGroup.Add(25f);
+        mixedGroup.Add(0f);
+        mixedGroup.Add(70f);
+        check(BarPolicy.GroupValue(mixedGroup.Build()) == "70",
+            "a mixed group keeps only the readable capacities and still prints the single maximum (70)");
+        var mixedSmall = new BarPolicy.StaggerGroupBuilder();
+        mixedSmall.Add(float.NaN);
+        mixedSmall.Add(25f);
+        mixedSmall.Add(0f);
+        check(BarPolicy.GroupValue(mixedSmall.Build()) == "25",
+            "an unreadable part cannot poison the confirmable ones: the readable maximum wins");
+
+        // ---- threshold formatting: the stored float itself, never rounded up, clamped or converted -------------
+        check(BarPolicy.ThresholdValue(40f) == "40" && BarPolicy.ThresholdValue(12.5f) == "12.5"
+            && BarPolicy.ThresholdValue(0.375f) == "0.375",
+            "a threshold keeps its precision: 40, 12.5 and 0.375 stay exactly that");
+        check(BarPolicy.ThresholdValue(39.9999f) == "39.9999",
+            "the stored 39.9999 is printed as 39.9999, never rounded up to 40");
+        check(BarPolicy.ThresholdValue(0.0001f) == "0.0001",
+            "a very small positive threshold keeps its real value instead of degenerating to 0");
+        check(BarPolicy.ThresholdValue(1e-6f) == "1E-06" || BarPolicy.ThresholdValue(1e-6f) == "0.000001",
+            "a sub-microscopic threshold still renders a real (round-trip) number");
+        check(BarPolicy.ThresholdValue(12345678f) == "12345678",
+            "a very large capacity keeps its real magnitude instead of being pinned to a printable ceiling");
+        check(BarPolicy.ThresholdValue(float.MaxValue) == float.MaxValue.ToString("G", CultureInfo.InvariantCulture),
+            "the largest float prints its own shortest round-trip form, not a fabricated 9999999");
+        foreach (float probe in new[] { 0.0001f, 0.5f, 7f, 12.5f, 40f, 39.9999f, 12345.678f, 1e-6f, 1e12f, float.MaxValue })
+        {
+            string text = BarPolicy.ThresholdValue(probe);
+            check(text.Length > 0
+                && float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out float back)
+                && back == probe,
+                "every printed threshold round-trips to the SAME float (" + probe.ToString("G", CultureInfo.InvariantCulture) + ")");
+        }
+        check(BarPolicy.ThresholdValue(0f) == string.Empty && BarPolicy.ThresholdValue(-3f) == string.Empty
+            && BarPolicy.ThresholdValue(float.NaN) == string.Empty
+            && BarPolicy.ThresholdValue(float.PositiveInfinity) == string.Empty
+            && BarPolicy.ThresholdValue(float.NegativeInfinity) == string.Empty,
+            "0, negative, NaN and Infinity have no text at all (the item is omitted, never shown as 0)");
+        check(BarPolicy.IsUsableThreshold(0.001f) && !BarPolicy.IsUsableThreshold(0f)
+            && !BarPolicy.IsUsableThreshold(-1f) && !BarPolicy.IsUsableThreshold(float.NaN)
+            && !BarPolicy.IsUsableThreshold(float.PositiveInfinity),
+            "a threshold is usable only when it is finite and strictly positive");
+
+        // ---- the game's own limb-destruction switch: only POSITIVE evidence allows the part items ---------------
+        check(BarPolicy.HitreactUnspecified == 0 && BarPolicy.HitreactNone == 1 && BarPolicy.HitreactMicro == 2
+            && BarPolicy.HitreactLight == 3 && BarPolicy.HitreactHeavy == 4 && BarPolicy.HitreactToDeath == 5
+            && BarPolicy.HitreactInstantRagdollDeath == 6,
+            "the pinned ES_HitreactType values match the installed interop");
+        check(BarPolicy.LimbBreakIsHitreact(BarPolicy.HitreactMicro)
+            && BarPolicy.LimbBreakIsHitreact(BarPolicy.HitreactLight)
+            && BarPolicy.LimbBreakIsHitreact(BarPolicy.HitreactHeavy),
+            "an authored Micro/Light/Heavy limb-destruction reaction is the positive evidence the part items need");
+        check(!BarPolicy.LimbBreakIsHitreact(BarPolicy.HitreactNone),
+            "None means the game plays no hitreact when a limb breaks, so no part threshold is claimed");
+        check(!BarPolicy.LimbBreakIsHitreact(BarPolicy.HitreactUnspecified),
+            "Unspecified is unauthored/unknown: the part items are omitted (this is NOT a claim of immunity)");
+        check(!BarPolicy.LimbBreakIsHitreact(BarPolicy.HitreactToDeath)
+            && !BarPolicy.LimbBreakIsHitreact(BarPolicy.HitreactInstantRagdollDeath),
+            "a death reaction is not a stagger threshold, so the part items are omitted");
+        check(!BarPolicy.LimbBreakIsHitreact(7) && !BarPolicy.LimbBreakIsHitreact(-1) && !BarPolicy.LimbBreakIsHitreact(99),
+            "an unknown/mod enum value is unproven and never enables the part items");
+        check(!BarPolicy.LimbBreakIsHitreact(BarPolicy.HitreactMicro - 1)
+            && BarPolicy.LimbBreakIsHitreact(BarPolicy.HitreactMicro + 1),
+            "the gate is an exact whitelist, not a threshold on the raw value");
+
+        // ---- the normal item is independent of the parts -------------------------------------------------------
+        check(BarPolicy.StaggerLine(Values(new BarPolicy.StaggerGroupBuilder(), new BarPolicy.StaggerGroupBuilder(), true, 0.5f), "zh")
+            == "[普通(阈值)：0.5]",
+            "the normal threshold is shown on its own even when no part is confirmable");
+        check(BarPolicy.StaggerLine(Values(limbs40, torso50, false, 0f), "zh") == "[四肢：40][躯体：50]",
+            "the parts are shown on their own when the normal threshold is unusable: the two are independent");
+        check(!BarPolicy.IsUsableThreshold(0f) && !BarPolicy.IsUsableThreshold(float.NaN),
+            "an unusable normal threshold removes only the normal item");
 
         // ---- anatomical classification: the shipped CD_BodypartType values, never magnitude/index/name --------
         check(BarPolicy.BodyGroup(BarPolicy.PartArmUpperRight) == BarPolicy.StaggerBodyGroup.Limbs
@@ -120,41 +206,21 @@ internal static class EnemyBarStaggerTests
             && BarPolicy.BodyGroup(BarPolicy.PartHead) != BarPolicy.StaggerBodyGroup.Torso,
             "the head (a kill, not a limb break) cannot enter either group");
 
-        // ---- the game's normal-hitreact formula: remaining = max(0, threshold - accumulator) ------------------
-        check(BarPolicy.StaggerRemaining(80f, 0f, out float left0) && Math.Abs(left0 - 80f) < 0.0001f,
-            "an untouched enemy still needs the full configured threshold (80 - 0)");
-        check(BarPolicy.StaggerRemaining(80f, 12.5f, out float left1) && Math.Abs(left1 - 67.5f) < 0.0001f,
-            "accumulated damage is subtracted exactly: 80 - 12.5 = 67.5, never rounded up");
-        check(BarPolicy.StaggerRemaining(0.5f, 0.125f, out float left2) && Math.Abs(left2 - 0.375f) < 0.0001f
-            && BarPolicy.DamageAmount(left2) == "0.375",
-            "fractional thresholds keep their precision: 0.5 - 0.125 = 0.375 is shown as 0.375");
-        check(BarPolicy.StaggerRemaining(5000f, 100f, out float bigLeft) && Math.Abs(bigLeft - 4900f) < 0.01f
-            && BarPolicy.DamageAmount(bigLeft) == "4900",
-            "a configured threshold above the enemy's HealthMax is still the real threshold, not hidden");
-        check(BarPolicy.StaggerRemaining(80f, 80f, out float spent) && spent == 0f && BarPolicy.DamageAmount(spent) == "0",
-            "a spent budget is a real 0 (the next hit triggers), which is not the same as no data");
-        check(BarPolicy.StaggerRemaining(80f, 400f, out float clamped) && clamped == 0f,
-            "an accumulator already past the threshold clamps at 0 instead of printing a negative requirement");
-        check(!BarPolicy.StaggerRemaining(0f, 0f, out _) && !BarPolicy.StaggerRemaining(-3f, 0f, out _)
-            && !BarPolicy.StaggerRemaining(float.NaN, 0f, out _) && !BarPolicy.StaggerRemaining(float.PositiveInfinity, 0f, out _),
-            "0/negative/NaN/Infinity thresholds are unusable and never turned into a number or an immunity");
-        check(!BarPolicy.StaggerRemaining(80f, float.NaN, out _) && !BarPolicy.StaggerRemaining(80f, -1f, out _),
-            "an unreadable or negative accumulator leaves the row a dash instead of guessing the remaining damage");
-        check(BarPolicy.StaggerLine(Values(bothLimbs, chest, false, 0f), "zh")
-            == "[四肢：40/40][躯体：30/50][普通(剩余)：—]",
-            "an unproven normal hitreact leaves the dash while the proven part values still show");
-
-        // ---- target switching cannot leave a stale group ------------------------------------------------------
+        // ---- target switching cannot leave a stale row ---------------------------------------------------------
         var switchA = new BarPolicy.StaggerGroupBuilder();
-        switchA.Add(15f, 40f);
+        switchA.Add(40f);
         string firstTarget = BarPolicy.StaggerLine(Values(switchA, new BarPolicy.StaggerGroupBuilder(), true, 80f), "zh");
         string cleared = BarPolicy.StaggerLine(BarPolicy.StaggerValues.None, "zh");
         var switchB = new BarPolicy.StaggerGroupBuilder();
-        switchB.Add(30f, 30f);
+        switchB.Add(30f);
         string secondTarget = BarPolicy.StaggerLine(Values(switchB, new BarPolicy.StaggerGroupBuilder(), true, 12f), "zh");
-        check(firstTarget == "[四肢：15/40][躯体：—][普通(剩余)：80]" && cleared == "[四肢：—][躯体：—][普通(剩余)：—]"
-            && secondTarget == "[四肢：30/30][躯体：—][普通(剩余)：12]",
-            "switching targets rebuilds both groups from the new enemy; the cleared state is all dashes, not the old values");
+        string switchToNothing = BarPolicy.StaggerLine(
+            Values(new BarPolicy.StaggerGroupBuilder(), new BarPolicy.StaggerGroupBuilder(), false, 0f), "zh");
+        check(firstTarget == "[四肢：40][普通(阈值)：80]" && cleared == string.Empty
+            && secondTarget == "[四肢：30][普通(阈值)：12]",
+            "switching targets rebuilds every item from the new enemy; the cleared state is an empty row, not the old values");
+        check(switchToNothing == string.Empty,
+            "switching to a target with no confirmable item yields an empty row, so the old numbers cannot be reused");
 
         // ---- row layout is computed independently of DrawLabel ------------------------------------------------
         int small = BarPolicy.StaggerFontPixels(BarPolicy.DefaultNumberSize, 720);
@@ -177,11 +243,23 @@ internal static class EnemyBarStaggerTests
             "the available width starts at the aligned glyph and never leaves the screen margin");
 
         // 1920/300/320 are 1/2/3 rows: the wide row is scaled or wrapped, never silently dropped.
-        check(BarPolicy.StaggerRows(300f, 200f, 250f, 150f) == 1
-            && BarPolicy.StaggerRows(300f, 320f, 250f, 150f) == 2
-            && BarPolicy.StaggerRows(300f, 320f, 320f, 150f) == 3
-            && BarPolicy.StaggerRows(0f, 200f, 250f, 150f) == 3,
+        check(BarPolicy.StaggerRows(300f, 200f, 250f, 150f, 3) == 1
+            && BarPolicy.StaggerRows(300f, 320f, 250f, 150f, 3) == 2
+            && BarPolicy.StaggerRows(300f, 320f, 320f, 150f, 3) == 3
+            && BarPolicy.StaggerRows(0f, 200f, 250f, 150f, 3) == 3,
             "a full row fits on one line; a narrow screen wraps at group boundaries (2/3 lines) instead of hiding");
+        // A row that lost an item must never be planned as an empty line.
+        check(BarPolicy.StaggerRows(300f, 200f, 200f, 200f, 1) == 1
+            && BarPolicy.StaggerRows(300f, 400f, 400f, 200f, 1) == 1,
+            "a single-item row is always one line, even when it has to be scaled or clamped");
+        check(BarPolicy.StaggerRows(300f, 400f, 200f, 200f, 2) == 2,
+            "a two-item row that does not fit becomes exactly two lines (never two lines plus an empty one)");
+        check(BarPolicy.StaggerRows(300f, 200f, 200f, 200f, 0) == 0
+            && BarPolicy.StaggerRows(0f, 200f, 250f, 150f, 0) == 0,
+            "a row with no item plans zero lines, so the caller draws nothing at all");
+        check(BarPolicy.StaggerRows(300f, 200f, 200f, 200f, 9) == 1
+            && BarPolicy.StaggerRows(0f, 200f, 250f, 150f, 9) == BarPolicy.MaxStaggerTokens,
+            "an impossible token count is clamped to the three shipped items");
         check(BarPolicy.StaggerRowY(100f, 1080) > 100f,
             "the row hangs below the bar instead of overlapping it");
 
@@ -215,7 +293,5 @@ internal static class EnemyBarStaggerTests
             "the existing weakspot/C-Foam tag selector still decides the line above the bar, untouched by the green row");
         check(BarPolicy.CfoamTag(9f) == "[结沫*3]" && BarPolicy.CfoamTag(BarPolicy.CfoamImmuneTolerance) == "[结沫*免疫]",
             "the C-Foam tag keeps its own amber wording and immune sentinel");
-        check(BarPolicy.NoStaggerValue != "免疫" && BarPolicy.NoStaggerValue != "0",
-            "the stagger no-data marker never borrows the C-Foam immune sentinel or a numeric 0");
     }
 }

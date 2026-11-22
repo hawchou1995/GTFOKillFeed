@@ -1,8 +1,8 @@
 {
   "name": "KillFeed",
-  "version_number": "1.2.24",
+  "version_number": "1.2.27",
   "website_url": "https://qingju.me",
-  "description": "GTFO 本地击杀卡片、伤害数字与尸体反馈。1.2.24 修复尸体淡出可能引发的全场景黑屏；准星血条分列四肢、躯体与普通硬直，触发硬直的伤害用浅绿色标出。联机焦点血条依赖 DamageSync。",
+  "description": "GTFO 本地击杀卡片、伤害数字与尸体反馈。1.2.27 区分零实例与暂时忙碌的淡出池，保留原清理截止。联机敌人血条依赖 DamageSync。",
   "dependencies": [
     "BepInEx-BepInExPack_GTFO-3.2.3",
     "randomuserhi-DamageSync-0.0.7"

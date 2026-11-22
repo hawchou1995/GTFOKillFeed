@@ -17,6 +17,7 @@ namespace HawChow.GTFOKillFeed;
 internal enum CorpseFadePoolState
 {
     Missing,     // the native pool object is null: nothing may be borrowed, and it is never created here
+    ZeroInstances, // an existing handle with three positively observed zero counts
     Exhausted,   // the pool exists but freeInstanceCount == 0
     Ready        // at least one free instance: a borrow is legal
 }
@@ -103,6 +104,55 @@ internal readonly struct CorpseFadePlan
     }
 }
 
+// 1.2.26: the real shape of the game's Decay pool, read once per attempt. ObjectPooler.Pool exposes exactly
+// these members (verified against the Test profile's Modules-ASM.dll): m_freeInstances/m_usedInstances
+// (LinkedList<GameObject>), m_minCount, dynamic, allowStealing plus the count/freeInstanceCount/
+// usedInstanceCount getters. One CorpseFadePoolState could not answer "is the pool structurally empty or just
+// busy": free==0 with used==count is a pool at its ceiling, free==0 with count==0 is a pool with no instances at
+// all, and dynamic=false means no later borrow can ever grow it. -1 means "the field could not be read" and is
+// never confused with the real count 0.
+internal readonly struct CorpseFadePoolFacts
+{
+    internal readonly CorpseFadePoolState State;
+    internal readonly int Free;
+    internal readonly int Used;
+    internal readonly int Count;
+    internal readonly int MinCount;
+    internal readonly bool Dynamic;
+    internal readonly bool AllowStealing;
+
+    internal CorpseFadePoolFacts(CorpseFadePoolState state, int free, int used, int count, int minCount,
+        bool dynamic, bool allowStealing)
+    {
+        State = state;
+        Free = free;
+        Used = used;
+        Count = count;
+        MinCount = minCount;
+        Dynamic = dynamic;
+        AllowStealing = allowStealing;
+    }
+
+    // A pool nobody has built yet. Every number stays "unreadable" so a log line never implies a count of 0.
+    internal static CorpseFadePoolFacts Missing
+        => new CorpseFadePoolFacts(CorpseFadePoolState.Missing, -1, -1, -1, -1, false, false);
+
+    internal bool IsReady => State == CorpseFadePoolState.Ready;
+
+    internal static CorpseFadePoolState Classify(int free, int used, int count)
+        => free < 0 || used < 0 || count < 0 ? CorpseFadePoolState.Missing
+            : free == 0 && used == 0 && count == 0 ? CorpseFadePoolState.ZeroInstances
+            : free > 0 ? CorpseFadePoolState.Ready : CorpseFadePoolState.Exhausted;
+
+    internal string Describe()
+        => "pool=" + (State == CorpseFadePoolState.Missing ? "missing"
+                : State == CorpseFadePoolState.ZeroInstances ? "zero-instances" : State == CorpseFadePoolState.Exhausted ? "exhausted" : "ready")
+            + ";free=" + Token(Free) + ";used=" + Token(Used) + ";count=" + Token(Count)
+            + ";min=" + Token(MinCount) + ";dynamic=" + Dynamic + ";steal=" + AllowStealing;
+
+    private static string Token(int value) => value < 0 ? "unreadable" : value.ToString();
+}
+
 // The single gate that refused the dissolve. Every value is an observed fact of the current frame, so a
 // log line can name the exact blocker instead of the previous single merged catch-all reason.
 internal enum CorpseFadeSkip
@@ -122,6 +172,12 @@ internal enum CorpseFadeSkip
     // separately from every other refusal, because "we refused this input" is a different receipt than
     // "the pool had nothing".
     HazardousInput,
+    // 1.2.26: the pool answered "no free instance" while NONE of our own fades held a slot, often enough that we
+    // stopped asking per corpse for a bounded while (see CorpseFadeBackoff). It is named apart from NoFreeInstance
+    // because it is the only refusal that describes OUR behaviour instead of the game's state: "we asked and the
+    // pool was empty" and "we deliberately did not ask" must never share a token in a host log.
+    PoolStarved,
+    ZeroInstances,
     ConcurrencyCap
 }
 
@@ -173,6 +229,7 @@ internal static class CorpseFadePolicy
         if (plan.PlayPatched) return CorpseFadeSkip.PatchedByThirdParty; // another mod could swallow Play -> instance would leak
         if (!plan.PrefabSafe) return CorpseFadeSkip.PrefabUnsafe;   // stopAction must return the instance, autoCleanup must free the clone
         if (plan.Pool == CorpseFadePoolState.Missing) return CorpseFadeSkip.PoolMissing;
+        if (plan.Pool == CorpseFadePoolState.ZeroInstances) return CorpseFadeSkip.ZeroInstances;
         if (plan.Pool != CorpseFadePoolState.Ready) return CorpseFadeSkip.NoFreeInstance;
         if (!plan.HaveRenderer) return CorpseFadeSkip.NoRenderer;    // not every enemy model exposes a usable renderer
         if (plan.OffScene) return CorpseFadeSkip.OffScene;           // already recycled off-scene: nothing visible to dissolve
@@ -196,6 +253,10 @@ internal static class CorpseFadePolicy
         CorpseFadeSkip.PrefabUnsafe => true,
         CorpseFadeSkip.PoolMissing => true,
         CorpseFadeSkip.NoFreeInstance => true,
+        // 1.2.26: a deliberate back-off is still an environment fact the operator has to explain ("why did the
+        // dissolve stop for a while?"), so it keeps a terminal line of its own - bounded like every other gate.
+        CorpseFadeSkip.PoolStarved => true,
+        CorpseFadeSkip.ZeroInstances => true,
         CorpseFadeSkip.HazardousInput => true,
         CorpseFadeSkip.ConcurrencyCap => true,
         _ => false
@@ -211,6 +272,10 @@ internal static class CorpseFadePolicy
         CorpseFadeSkip.PrefabUnsafe => "prefab-unsafe",
         CorpseFadeSkip.PoolMissing => "pool-missing",
         CorpseFadeSkip.NoFreeInstance => "no-free-instance",
+        // 1.2.26: "we declined to ask" is its own token - the operator must be able to tell a deliberate
+        // back-off from the pool's own answer.
+        CorpseFadeSkip.PoolStarved => "pool-starved",
+        CorpseFadeSkip.ZeroInstances => "pool-zero-instances",
         CorpseFadeSkip.HazardousInput => "hazardous-input",
         CorpseFadeSkip.NoRenderer => "no-renderer",
         CorpseFadeSkip.OffScene => "off-scene",
@@ -238,9 +303,8 @@ internal static class CorpseFadePolicy
         _ => "unexpected"
     };
 
-    // A dissolve that the game is now animating (or whose state cannot be read, which keeps the slot).
-    internal static bool IsStarted(CorpseFadeOutcome outcome)
-        => outcome == CorpseFadeOutcome.Started || outcome == CorpseFadeOutcome.StartedProbeUnknown;
+    // Keeping a concurrency slot after an unreadable probe does not prove the effect started.
+    internal static bool IsStarted(CorpseFadeOutcome outcome) => outcome == CorpseFadeOutcome.Started;
 
     // ---- the corpse's own Decay component (1.2.16, second real-machine pass) --------------------------
     // StopAction is the native enum { None = 0, Deactivate = 1, Destroy = 2 }. The pooled effect prefab
@@ -270,6 +334,12 @@ internal static class CorpseFadePolicy
     // Armed, so neither an exception nor a silently different renderer can ever reach Play.
     internal static CorpseFadeArm ArmVerdict(bool threw, bool targetBound)
         => threw ? CorpseFadeArm.Failed : targetBound ? CorpseFadeArm.Armed : CorpseFadeArm.Refused;
+    // Identity alone can survive a partial Initialize. Both the old copy and the source must be excluded.
+    internal static bool ArmComplete(bool targetBound, bool liveMesh, long copy, long source, long previous, bool playing)
+        => targetBound && liveMesh && copy != 0 && source != 0 && copy != source && copy != previous && !playing;
+
+    internal static bool MayReturn(bool sameBorrow, bool alive, CorpseFadeState state, bool sameUsedNode, bool inFree)
+        => sameBorrow && alive && state == CorpseFadeState.Idle && sameUsedNode && !inFree;
     internal static bool ShouldAttemptNative(CorpseFadeNativePath path) => path == CorpseFadeNativePath.Started;
     // "No component on this model" and "already playing" are the two facts an operator needs once, because
     // they explain why a corpse fell back to the pooled path. The user's own switches stay silent.
@@ -435,8 +505,9 @@ internal interface ICorpseFadeTarget
     CorpseFadeArm Ready(object handle, object renderer);
     void Play(object handle, float seconds);
     CorpseFadeState Probe(object handle);
-    void Cleanup(object handle);
-    void Return(object handle);
+    bool OwnsIdleBorrow(object handle);
+    bool Cleanup(object handle);
+    bool Return(object handle);
 }
 
 // Exception barrier for the optional dissolve at the existing EndAt stage. The corpse's own cleanup
@@ -550,12 +621,91 @@ internal sealed class CorpseFadeDiagnostics
     }
 }
 
-// Borrow/hand-back state machine. The native Decay instance is only ever borrowed from the game pool
-// and handed back exactly once:
-//   * Play started and m_playing is true  -> the game owns it; Update() returns it (stopAction=Deactivate).
-//   * Play did not start / threw          -> we own it, so we Cleanup() the clone and pool.Return() once.
-//   * the state cannot be read            -> ownership is unproven: keep the slot and touch nothing.
-// There is no Object.Destroy call anywhere, so the shared Decay sound player is never recycled.
+// 1.2.26: how long the pooled path is allowed to keep asking an empty pool. A three-level 1.2.25 session opened
+// with `started=9/0/0` and then produced 4,401 deferred attempts and 2,200 skipped corpses in its last level with
+// `active=0` throughout - i.e. every one of those retries happened while OUR OWN slot table was empty, so the pool
+// was held by the game, not by us, and a second attempt a quarter of a second later could not have answered
+// differently. The retry ladder itself is not wrong (MaxBorrowPolls covers a same-frame race, the two pre-EndAt
+// preparations cover a pool that frees a slot in time), but it must not be paid per corpse for minutes on end.
+// This is the bounded, per-level, purely observational back-off that decides when to stop asking:
+//   * two consecutive "no free instance" answers while NONE of our fades holds a slot open the cooldown;
+//   * one observation of a READY pool, or the cooldown running out, closes it again, so a pool that recovers is
+//     used by the very next corpse and a pool that stays empty is not re-asked 2,200 times;
+//   * nothing here borrows, creates, returns, expires or destroys a native instance - it only decides whether to
+//     call the same read-only gates that already existed.
+internal enum CorpseFadeBackoffStep
+{
+    None,
+    // We just stopped asking. The corpse keeps the shipped instant hide at its existing deadline; the pooled
+    // path is not retried for every later corpse until the gate opens again.
+    Starved,
+    // The cooldown ran out: the next corpse asks the pool exactly once more.
+    CooldownExpired,
+    // The pool answered "ready" while we were backing off: normal behaviour resumes immediately.
+    Recovered
+}
+
+internal struct CorpseFadeBackoff
+{
+    // Two empty answers with no slot of our own are enough: the first corpse already showed the pool is held by
+    // somebody else, and the second one only rules out "this frame was unlucky".
+    internal const int StarvedMisses = 2;
+    // Short on purpose: the longest a recovered-but-unnoticed pool can stay unused, and a window a reader of the
+    // log can still reconcile with a fight.
+    internal const float CooldownSeconds = 8f;
+
+    internal int Misses;
+    internal bool Starved;
+    internal float RetryAt;
+
+    // Level change / plugin unload: the pool belongs to the game and is rebuilt with the level, so the whole
+    // observation is dropped. Nothing native is touched.
+    internal void Reset()
+    {
+        Misses = 0;
+        Starved = false;
+        RetryAt = 0f;
+    }
+
+    // Called once per attempt with the pool as it is right now; returns the transition so the host can log it
+    // once per transition instead of once per corpse.
+    internal CorpseFadeBackoffStep Observe(bool ready, int activeFades, float now)
+    {
+        if (ready)
+        {
+            // Only a pool we had actually stopped asking about "recovers"; a single miss the very next attempt
+            // disproved stays silent, so the receipt keeps meaning "the gate was closed and is open again".
+            bool wasBackingOff = Starved;
+            Reset();
+            return wasBackingOff ? CorpseFadeBackoffStep.Recovered : CorpseFadeBackoffStep.None;
+        }
+        if (Starved)
+        {
+            if (now < RetryAt) return CorpseFadeBackoffStep.None;
+            Reset();
+            return CorpseFadeBackoffStep.CooldownExpired;
+        }
+        // A slot of OUR OWN is not the game's starvation: our own dissolve returns its instance through the game's
+        // Update, so the next attempt can legitimately succeed and must stay retryable.
+        if (activeFades > 0)
+        {
+            Misses = 0;
+            return CorpseFadeBackoffStep.None;
+        }
+        if (Misses < StarvedMisses) Misses++;
+        if (Misses < StarvedMisses) return CorpseFadeBackoffStep.None;
+        Starved = true;
+        RetryAt = now + CooldownSeconds;
+        return CorpseFadeBackoffStep.Starved;
+    }
+
+    // "May the pooled path ask the pool at all?" Only the pooled path consults this; the corpse-own Decay
+    // component never borrows and is untouched by a starved pool.
+    internal bool MayAttempt(bool ready) => ready || !Starved;
+}
+
+// A playing handle is observed only; an unreadable handle stays booked. Only a failed, positively owned
+// borrow can be cleaned and returned. Idle does not mean that the game's free list contains it.
 internal sealed class CorpseFadeCoordinator
 {
     private sealed class Entry
@@ -567,6 +717,7 @@ internal sealed class CorpseFadeCoordinator
 
     internal int Active => _entries.Count;
     internal int ManualReleases { get; private set; }
+    internal int ReleaseUnconfirmed { get; private set; }
     internal int GameReleases { get; private set; }
     internal int DestroyedReleases { get; private set; }
     internal int Skips { get; private set; }
@@ -680,9 +831,7 @@ internal sealed class CorpseFadeCoordinator
             }
             // 1.2.20: the borrowed instance is ARMED the way the game arms its own (ES_Dead.DecayDelayed:
             // GetInstance -> Initialize(renderer, irfs) -> Play) and accepted only when the component then reports
-            // THIS renderer. 1.2.18 threw a native NullReferenceException from that call, so every answer other than
-            // Armed hands the instance back exactly once: a pool slot can never leak, and a failed arm is a named
-            // outcome (`pool-arm-failed`) instead of a silent skip.
+            // THIS renderer and a new live copy. A failed arm never plays; release requires separate proof.
             CorpseFadeArm arm;
             try { arm = target.Ready(handle, renderer); }
             catch (Exception error)
@@ -704,8 +853,7 @@ internal sealed class CorpseFadeCoordinator
             // Play may throw or be swallowed by a third-party patch; the ONLY ownership proof is the
             // native m_playing flag afterwards (the native Play writes it synchronously, see
             // kf128-ro-investigation/native/disasm-decay-esdead.txt 0x162ff47):
-            //   m_playing == true  -> the game's Update() returns it (stopAction=Deactivate); never Return.
-            //   m_playing == false -> nobody else will return it, so Cleanup+Return exactly once here.
+            // Playing transfers control to the game. Idle only permits a separate ownership check.
             bool playThrew = false;
             try { target.Play(handle, CorpseFadePolicy.FadeSeconds); }
             catch (Exception error) { playThrew = true; LastError = error; }
@@ -756,15 +904,23 @@ internal sealed class CorpseFadeCoordinator
 
     private void ReleaseManual(ICorpseFadeTarget target, object handle)
     {
-        try { target.Cleanup(handle); } catch (Exception) { }
-        try { target.Return(handle); } catch (Exception) { }
-        ManualReleases++;
-        Recovered++;
+        try
+        {
+            if (handle != null && target.OwnsIdleBorrow(handle) && target.Cleanup(handle)
+                && target.OwnsIdleBorrow(handle) && target.Return(handle))
+            {
+                ManualReleases++;
+                Recovered++;
+                return;
+            }
+        }
+        catch (Exception error) { LastError ??= error; }
+        ReleaseUnconfirmed++;
     }
 
     // Called once per tick. Drops bookkeeping only, based on the real native state:
     //   Playing -> keep the slot (never timed out, never returned here);
-    //   Idle    -> the game already returned the instance, so forget it;
+    //   Idle    -> no longer observed playing; this is not proof of freelist membership;
     //   Gone    -> the object died with the level, so forget it;
     //   Unknown -> fail closed: keep the slot, because ownership cannot be proven.
     // Returns the number of entries held only because their state is unknown (for bounded logging).
@@ -800,6 +956,7 @@ internal sealed class CorpseFadeCoordinator
     internal void ResetCounters()
     {
         ManualReleases = 0;
+        ReleaseUnconfirmed = 0;
         GameReleases = 0;
         DestroyedReleases = 0;
         Skips = 0;

@@ -15,11 +15,12 @@ param(
 #     StaggerAvailableWidth/StaggerRowLeft/StaggerRowY, and colours the text from BarPolicy.StaggerText* - it never
 #     touches NameContent/PartContent/NumbersContent, the weakspot colour or the C-Foam amber;
 #   * EnemyBar.Tick refreshes through ReadStagger + BarPolicy.StaggerLine exactly once;
-#   * ReadStagger reads the game's destroyable-limb facts (m_destruction + HasDestruction + IsDestroyed + m_health +
-#     m_healthMax), classifies the limb through CD_CharacterDestructionCollider.m_bodyPart and
+#   * ReadStagger reads the game's destroyable-limb facts (m_destruction + HasDestruction + IsDestroyed + m_healthMax,
+#     and NOT the current m_health), classifies the limb through CD_CharacterDestructionCollider.m_bodyPart and
 #     BarPolicy.BodyGroup (never eLimbDamageType/m_type), aggregates the two groups through StaggerGroupBuilder,
-#     excludes the head limb, and reads the normal budget as DamageUntilHitreact minus the live
-#     Dam_EnemyDamageBase.m_damBuildToHitreact accumulator through BarPolicy.StaggerRemaining;
+#     excludes the head limb, gates both part items on GameData.HealthData.HitreactOnLimbDestruction through
+#     BarPolicy.LimbBreakIsHitreact, and reads the normal item as DamageUntilHitreact ALONE - it must not read the
+#     Dam_EnemyDamageBase.m_damBuildToHitreact accumulator (that stays with the 1.2.24 green digits);
 #   * the installed Modules-ASM interop really defines CharacterDestruction.CD_BodypartType with the pinned values,
 #     CD_CharacterDestructionCollider.m_bodyPart of that type, and Dam_EnemyDamageLimb.m_health/m_healthMax/
 #     m_destruction of the expected types; eLimbDamageType is pinned as the unrelated Normal/Weakspot/Armor enum;
@@ -91,7 +92,8 @@ try {
 
     # ---- The row is left-anchored to the name's real first glyph ------------------------------------------------
     foreach ($requiredMethod in @('StaggerFontPixels', 'StaggerMinFontPixels', 'StaggerTokens', 'StaggerRows',
-        'StaggerAvailableWidth', 'StaggerRowLeft', 'StaggerRowY', 'TextOriginX')) {
+        'StaggerAvailableWidth', 'StaggerRowLeft', 'StaggerRowY', 'TextOriginX', 'LimbBreakIsHitreact',
+        'ThresholdValue', 'IsUsableThreshold', 'StaggerTokenCount')) {
         if (@($barPolicy.Methods | Where-Object { $_.Name -eq $requiredMethod -and $_.HasBody }).Count -ne 1) {
             throw "BarPolicy.$requiredMethod must exist exactly once with a body."
         }
@@ -101,11 +103,59 @@ try {
             throw "BarPolicy.$removed (the old centred/refuse-to-draw helper) must not exist any more."
         }
     }
+    # 1.2.25: the remaining/current machinery must be GONE. A row that shows the theoretical maximum cannot subtract the
+    # live accumulator and cannot print a current durability, so those helpers (and the dash they returned) may not exist.
+    foreach ($gone in @('StaggerRemaining', 'RequiredDamage', 'DamageAmount', 'DamageSpan')) {
+        if (@($barPolicy.Methods | Where-Object { $_.Name -eq $gone }).Count -ne 0) {
+            throw "BarPolicy.$gone (the removed remaining/current formatter) must not exist any more: the row shows the theoretical maximum only."
+        }
+    }
+    if ($null -ne ($barPolicy.Fields | Where-Object { $_.Name -eq 'NoStaggerValue' })) {
+        throw 'BarPolicy.NoStaggerValue (the dash an omitted item used to print) must not exist any more.'
+    }
+    # One value in, so a caller physically cannot hand in a current durability next to the capacity.
+    $builderType = $barPolicy.NestedTypes | Where-Object { $_.Name -eq 'StaggerGroupBuilder' }
+    if ($null -eq $builderType) { throw 'BarPolicy must keep the nested StaggerGroupBuilder.' }
+    $addMethods = @($builderType.Methods | Where-Object { $_.Name -eq 'Add' -and $_.HasBody })
+    if ($addMethods.Count -ne 1 -or $addMethods[0].Parameters.Count -ne 1) {
+        throw "BarPolicy.StaggerGroupBuilder.Add must take exactly ONE argument (the capacity); found $(if ($addMethods.Count -eq 1) { $addMethods[0].Parameters.Count } else { 'no method' })."
+    }
+    $rowsMethod = @($barPolicy.Methods | Where-Object { $_.Name -eq 'StaggerRows' -and $_.HasBody })
+    if ($rowsMethod.Count -ne 1 -or $rowsMethod[0].Parameters.Count -ne 5) {
+        throw "BarPolicy.StaggerRows must be the count-aware five-argument plan (available, fullWidth, firstLineWidth, widestTokenWidth, tokens); found $($rowsMethod[0].Parameters.Count) parameters."
+    }
     if ($null -eq ($bar.Fields | Where-Object { $_.Name -eq '_nameOriginX' -and $_.FieldType.FullName -eq 'System.Single' })) {
         throw 'EnemyBar must keep the float _nameOriginX field shared with the green row.'
     }
     if ($null -eq ($bar.Fields | Where-Object { $_.Name -eq '_nameOriginValid' -and $_.FieldType.FullName -eq 'System.Boolean' })) {
         throw 'EnemyBar must keep the bool _nameOriginValid field (name hidden => bar left edge).'
+    }
+    if ($null -eq ($bar.Fields | Where-Object { $_.Name -eq 'StaggerLines' -and $_.FieldType.FullName -eq 'System.String[]' })) {
+        throw 'EnemyBar must keep the string[] StaggerLines line buffer (the row wraps without allocating and without empty lines).'
+    }
+    # 1.2.25: ONE maximum per group. The value type keeps only HasValue + Max, and the builder only keeps a maximum, so a
+    # minimum cannot come back and a group of 40 + 60 can only ever print 60 (no "40-60" range).
+    $groupValues = $barPolicy.NestedTypes | Where-Object { $_.Name -eq 'StaggerGroupValues' }
+    if ($null -eq $groupValues) { throw 'BarPolicy must keep the nested StaggerGroupValues.' }
+    if ($null -eq ($groupValues.Fields | Where-Object { $_.Name -eq 'Max' -and $_.FieldType.FullName -eq 'System.Single' -and -not $_.IsStatic })) {
+        throw 'BarPolicy.StaggerGroupValues must keep the single float Max field.'
+    }
+    foreach ($goneField in @('MaxMin', 'MaxMax', 'CurrentMin', 'CurrentMax', 'CapacityMin', 'CapacityMax')) {
+        if ($null -ne ($groupValues.Fields | Where-Object { $_.Name -eq $goneField })) {
+            throw "BarPolicy.StaggerGroupValues.$goneField (a range/current half) must not exist: a group prints one maximum only."
+        }
+    }
+    foreach ($goneField in @('_min', '_currentMin', '_currentMax', '_capacityMin', '_capacityMax')) {
+        if ($null -ne ($builderType.Fields | Where-Object { $_.Name -eq $goneField })) {
+            throw "BarPolicy.StaggerGroupBuilder.$goneField must not exist: the builder keeps only the maximum."
+        }
+    }
+    # 1.2.25: the green row may only ever describe the CURRENT target, and only while that target is alive.
+    if ($null -eq ($bar.Fields | Where-Object { $_.Name -eq '_staggerTargetId' -and $_.FieldType.FullName -eq 'System.Int32' })) {
+        throw 'EnemyBar must keep the int _staggerTargetId field that records which enemy the cached row describes.'
+    }
+    if ($null -eq ($bar.Fields | Where-Object { $_.Name -eq '_haveTarget' -and $_.FieldType.FullName -eq 'System.Boolean' })) {
+        throw 'EnemyBar must keep the bool _haveTarget field the row is gated on.'
     }
 
     $label = @($bar.Methods | Where-Object { $_.Name -eq 'DrawLabel' -and $_.HasBody })
@@ -227,6 +277,11 @@ try {
         (Find-FieldIndices $rowIl 'HawChow.GTFOKillFeed.EnemyBar' '_stagger').Count -lt 1) {
         throw "EnemyBar.DrawStaggerRow must paint the cached string and tokens (_labelStagger/_stagger). IL: $(Show $rowIl)"
     }
+    # 1.2.25: the row is painted only for a LIVE target, so a lost target's row disappears with the target instead of
+    # lingering through the bar's fade-out with the previous enemy's numbers.
+    if ((Find-FieldIndices $rowIl 'HawChow.GTFOKillFeed.EnemyBar' '_haveTarget').Count -lt 1) {
+        throw "EnemyBar.DrawStaggerRow must read _haveTarget and draw nothing once the target is gone. IL: $(Show $rowIl)"
+    }
     # The row style itself must be MiddleLeft, not MiddleCenter. TextAnchor.MiddleLeft is ldc.i4.3.
     $styles = @($bar.Methods | Where-Object { $_.Name -eq 'EnsureStyles' -and $_.HasBody })
     if ($styles.Count -ne 1) { throw 'EnemyBar.EnsureStyles must exist exactly once with a body.' }
@@ -260,6 +315,26 @@ try {
         throw "EnemyBar.Tick must format the row through BarPolicy.StaggerLine exactly once. IL: $(Show $tickIl)"
     }
 
+    # 1.2.25: the cached row belongs to ONE enemy. Tick records which enemy it just read and drops the row's text on a
+    # switch, so the previous target's numbers can never survive into the new target or into a fade-out.
+    function Count-FieldStore($instructions, [string]$declaringType, [string]$name) {
+        $count = 0
+        for ($i = 0; $i -lt $instructions.Count; $i++) {
+            $opCode = $instructions[$i].OpCode.Name
+            if ($opCode -ne 'stsfld' -and $opCode -ne 'stfld') { continue }
+            $operand = $instructions[$i].Operand
+            if ($operand -is [Mono.Cecil.FieldReference] -and $operand.Name -eq $name -and
+                $null -ne $operand.DeclaringType -and $operand.DeclaringType.FullName -eq $declaringType) { $count++ }
+        }
+        return $count
+    }
+    if ((Count-FieldStore $tickIl 'HawChow.GTFOKillFeed.EnemyBar' '_staggerTargetId') -lt 1) {
+        throw "EnemyBar.Tick must record the enemy the row describes in _staggerTargetId. IL: $(Show $tickIl)"
+    }
+    if ((Count-FieldStore $tickIl 'HawChow.GTFOKillFeed.EnemyBar' '_labelStagger') -lt 2) {
+        throw "EnemyBar.Tick must clear _labelStagger on a target switch and then store the new row (2 stores). IL: $(Show $tickIl)"
+    }
+
     # ---- ReadStagger: game facts only, no invented scaling or body-part guess ------------------------------------
     $read = @($bar.Methods | Where-Object { $_.Name -eq 'ReadStagger' -and $_.HasBody })
     if ($read.Count -ne 1) { throw 'EnemyBar.ReadStagger must exist exactly once with a body.' }
@@ -269,12 +344,11 @@ try {
         @{ Declaring = 'CharacterDestruction.CD_CharacterDestructionCollider'; Name = 'HasDestruction' },
         @{ Declaring = 'CharacterDestruction.CD_CharacterDestructionCollider'; Name = 'get_m_bodyPart' },
         @{ Declaring = 'Dam_EnemyDamageLimb'; Name = 'get_IsDestroyed' },
-        @{ Declaring = 'Dam_EnemyDamageLimb'; Name = 'get_m_health' },
         @{ Declaring = 'Dam_EnemyDamageLimb'; Name = 'get_m_healthMax' },
         @{ Declaring = 'Enemies.EnemyAgent'; Name = 'get_m_headLimb' },
         @{ Declaring = 'Enemies.EnemyAgent'; Name = 'get_EnemyBalancingData' },
         @{ Declaring = 'GameData.HealthData'; Name = 'get_DamageUntilHitreact' },
-        @{ Declaring = 'Dam_EnemyDamageBase'; Name = 'get_m_damBuildToHitreact' }
+        @{ Declaring = 'GameData.HealthData'; Name = 'get_HitreactOnLimbDestruction' }
     )) {
         if ((Find-CallIndices $readIl $required.Declaring $required.Name).Count -lt 1) {
             throw "EnemyBar.ReadStagger must read $($required.Declaring).$($required.Name). IL: $(Show $readIl)"
@@ -294,10 +368,23 @@ try {
     if ((Find-CallIndices $readIl 'Dam_EnemyDamageLimb' 'get_m_type').Count -ne 0) {
         throw 'EnemyBar.ReadStagger must never classify a body part from Dam_EnemyDamageLimb.m_type (eLimbDamageType).'
     }
-    # The normal slot is the game-proven REMAINING damage (threshold - live accumulator), computed by the tested
-    # policy helper. No magnitude/ratio heuristic may exist any more, and HealthMax must not be used to gate it.
-    if ((Find-CallIndices $readIl 'HawChow.GTFOKillFeed.BarPolicy' 'StaggerRemaining').Count -ne 1) {
-        throw "EnemyBar.ReadStagger must compute the remaining normal-hitreact damage through BarPolicy.StaggerRemaining exactly once. IL: $(Show $readIl)"
+    # 1.2.25: the normal item is the game-proven THRESHOLD itself (HealthData.DamageUntilHitreact). The live accumulator
+    # must NOT be read here any more: subtracting it would print a remaining amount, and it is still required - but only
+    # by the real-hit green digits (1.2.24), which is a different question with its own read path.
+    if ((Find-CallIndices $readIl 'Dam_EnemyDamageBase' 'get_m_damBuildToHitreact').Count -ne 0) {
+        throw "EnemyBar.ReadStagger must not read Dam_EnemyDamageBase.m_damBuildToHitreact: the row shows the theoretical maximum, never a remaining amount. IL: $(Show $readIl)"
+    }
+    if ((Find-CallIndices $readIl 'Dam_EnemyDamageLimb' 'get_m_health').Count -ne 0) {
+        throw "EnemyBar.ReadStagger must not read the CURRENT limb durability (m_health): only the fixed capacity is a threshold. IL: $(Show $readIl)"
+    }
+    if ((Find-CallIndices $readIl 'HawChow.GTFOKillFeed.BarPolicy' 'StaggerRemaining').Count -ne 0) {
+        throw "EnemyBar.ReadStagger must not call a remaining/threshold-minus-accumulator helper. IL: $(Show $readIl)"
+    }
+    if ((Find-CallIndices $readIl 'HawChow.GTFOKillFeed.BarPolicy' 'IsUsableThreshold').Count -ne 1) {
+        throw "EnemyBar.ReadStagger must accept the normal threshold through BarPolicy.IsUsableThreshold exactly once. IL: $(Show $readIl)"
+    }
+    if ((Find-CallIndices $readIl 'HawChow.GTFOKillFeed.BarPolicy' 'LimbBreakIsHitreact').Count -ne 1) {
+        throw "EnemyBar.ReadStagger must gate the part items on the game's own limb-destruction hitreact switch through BarPolicy.LimbBreakIsHitreact exactly once. IL: $(Show $readIl)"
     }
     $removedGuess = @($barPolicy.Methods | Where-Object { $_.Name -eq 'NormalHitreactIsDamage' })
     if ($removedGuess.Count -ne 0) {
@@ -391,6 +478,40 @@ try {
         (Get-InteropEnumValue $limbTypeEnum 'Armor') -ne 2) {
         throw 'eLimbDamageType must stay Normal=0/Weakspot=1/Armor=2; it is not a body-part enum.'
     }
+    # 1.2.25: the limb-destruction hitreact switch the part items are gated on, and the enum values it is compared against.
+    $hitreactEnum = $interopModule.GetType('ES_HitreactType')
+    if ($null -eq $hitreactEnum -or -not $hitreactEnum.IsEnum) { throw 'Installed interop is missing the ES_HitreactType enum.' }
+    $expectedHitreacts = [ordered]@{
+        'Unspecified'         = 0
+        'None'                = 1
+        'Micro'               = 2
+        'Light'               = 3
+        'Heavy'               = 4
+        'ToDeath'             = 5
+        'InstantRagdollDeath' = 6
+    }
+    foreach ($name in $expectedHitreacts.Keys) {
+        $interopValue = Get-InteropEnumValue $hitreactEnum $name
+        if ($interopValue -ne $expectedHitreacts[$name]) {
+            throw "Interop ES_HitreactType.$name is $interopValue, expected $($expectedHitreacts[$name])."
+        }
+        $pluginValue = Get-PluginConstInt 'HawChow.GTFOKillFeed.BarPolicy' ('Hitreact' + $name)
+        if ($pluginValue -ne $interopValue) {
+            throw "BarPolicy.Hitreact$name ($pluginValue) does not match the installed interop value ($interopValue)."
+        }
+    }
+    $healthData = $interopModule.GetType('GameData.HealthData')
+    if ($null -eq $healthData) { throw 'Installed interop is missing GameData.HealthData.' }
+    foreach ($expected in @(
+        @{ Name = 'HitreactOnLimbDestruction'; Type = 'ES_HitreactType' },
+        @{ Name = 'TryForceHitreactOnLimbDestruction'; Type = 'System.Boolean' },
+        @{ Name = 'DamageUntilHitreact'; Type = 'System.Single' }
+    )) {
+        $property = $healthData.Properties | Where-Object { $_.Name -eq $expected.Name }
+        if ($null -eq $property -or $property.PropertyType.FullName -ne $expected.Type) {
+            throw "GameData.HealthData.$($expected.Name) must be $($expected.Type) in the installed interop."
+        }
+    }
 
     # ---- Selection and clone proof ------------------------------------------------------------------------------
     $feedback = $module.GetType('HawChow.GTFOKillFeed.CorpseFeedback')
@@ -467,10 +588,10 @@ try {
     }
 
     $summary = "STAGGER_ROW_IL=PASS;DRAW_CALLS=$($drawRow.Count);ROW_PARAMS=$($row[0].Parameters.Count);" +
-        'ANCHOR=name-first-glyph(TextOriginX)+bar-left;OWN_FONT=1;WRAP=StaggerRows;CLAMP=StaggerRowLeft;' +
-        'COLOR=BarPolicy.StaggerText*;FOREIGN_CONTENT=0;REFRESH=ReadStagger+StaggerLine;' +
-        'PART=CD_BodypartType.m_bodyPart+BodyGroup(interop-pinned)+StaggerGroupBuilder;' +
-        'NORMAL=DamageUntilHitreact+m_damBuildToHitreact+StaggerRemaining;SELECT=FadeRenderer->IsSafeInput;' +
+        'ANCHOR=name-first-glyph(TextOriginX)+bar-left;OWN_FONT=1;WRAP=StaggerRows(count-aware);CLAMP=StaggerRowLeft;' +
+        'COLOR=BarPolicy.StaggerText*;FOREIGN_CONTENT=0;REFRESH=ReadStagger+StaggerLine;STALE=_staggerTargetId+_haveTarget;' +
+        'PART=m_bodyPart+BodyGroup+m_healthMax(max-only)+HitreactOnLimbDestruction(Micro/Light/Heavy-only);' +
+        'NORMAL=DamageUntilHitreact-only(no-accumulator);EMPTY_ITEM=omitted;NUMBER=roundtrip-G;SELECT=FadeRenderer->IsSafeInput;' +
         'OBSERVE=subtree(GetChild);TRY_NATIVE=m_decayRenderer+HasLiveCopy(no-Initialize)'
     Write-Host $summary
 }

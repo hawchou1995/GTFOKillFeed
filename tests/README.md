@@ -34,7 +34,7 @@ into the test project.
   asserts that `HitMarkerHud.Submit` calls the pure `HitMarkerPolicy.AcceptsSubmission`
   gate (disabled channel or `HitMarkerKind.None` -> reject) before projection/queue work,
   and that the rejected path returns `false` immediately.
-- `GTFOKillFeed.Smoke` (1542 assertions in 1.2.24) links the same policy sources
+- `GTFOKillFeed.Smoke` (1609 assertions in 1.2.27) links the same policy sources
   and embeds the shipped `KillFeed.Audio.*.wav`, `KillFeed.Icons.hitmark-*.png` and
   `KillFeed.EnemyNames.defaults.json`, so cue bytes, marker rasters and the name list are
   asserted against the files the plugin actually ships. It also carries `KillCounterTests`
@@ -51,13 +51,15 @@ into the test project.
   against `EngineStubs.cs`, a double of the Unity/Il2Cpp API surface only (no gameplay): three
   tiers, every "compositor not verifiable" refusal, a target/window grid mismatch and a missing
   sprite; it also asserts the native health bar is never moved or rescaled.
+- `GTFOKillFeed.CorpseReplay` exercises the production Rigidbody/AudioClip bindings (48 transitions
+  and 7 PCM cases). This is an API-boundary replay, not a live game.
 
 The SDK is pinned by the repository root `global.json` (6.0.428, `rollForward=latestPatch`);
 a host without a matching 6.0.x SDK fails with `A compatible .NET SDK was not found` instead
 of silently building different IL.
 
 The [reproduction guide](../docs/REPRODUCE.md) lists the build commands, expected results
-for the five test suites and `KillFeed.IlGuard`, and invocations of the nine PowerShell IL
+for the six test suites and `KillFeed.IlGuard`, and invocations of the nine PowerShell IL
 checks against the same rebuilt DLL. Use a read-only `GTFO_DIR` and an external scratch
 directory. The older `verify_docs.py` checks belong to the historical 1.2.17 layout.
 

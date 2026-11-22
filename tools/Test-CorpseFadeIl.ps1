@@ -6,8 +6,9 @@ param(
 # Compiled-IL guard for the optional native corpse dissolve (review F1/F2/F5).
 # Text/comment guards can be tripped by a harmless comment, so the *dangerous* behaviours are asserted
 # on the emitted IL of the real assembly:
-#   * no Object.Destroy / DestroyImmediate call anywhere (destroying a Decay recycles the shared
-#     sound player and silences every later decay);
+#   * no corpse/dissolve Object.Destroy / DestroyImmediate, except the single failed-audio cleanup proved to
+#     consume the AudioClip.Create result (never a Decay, GameObject, or other object);
+#   * corpse leases restore captured rigidbody state through ResetMotion in safe order and recycle via ResetMotion;
 #   * no Decay.EnsureInitialized / ObjectPooler.InitializePool / Resources.Load (never build the pool);
 #   * no Decay.SetMaterialPropertyBlock (never write shared materials);
 #   * no HarmonyPatch attribute targeting Decay or ES_Dead (never detour the native state machine);
@@ -76,11 +77,14 @@ try {
             $operand = $ins.Operand
             if ($operand -is [Mono.Cecil.MethodReference]) {
                 $declaring = if ($null -ne $operand.DeclaringType) { $operand.DeclaringType.FullName } else { '' }
-                # Texture2D churn in the icon pipeline legitimately destroys its own textures, so the
-                # no-destroy rule is scoped to the corpse/dissolve code that touches the native pool.
-                $isCorpseType = $method.DeclaringType.FullName -match '^HawChow\.GTFOKillFeed\.(CorpseFade|CorpseFeedback|CorpseVisualLease)'
-                if ($isCorpseType -and $operand.Name -in @('Destroy', 'DestroyImmediate') -and $declaring -in @('UnityEngine.Object', 'UnityEngine.Object[]')) {
-                    throw "$($method.FullName) calls $declaring::$($operand.Name): destroying a pooled Decay/GameObject recycles the shared sound player. IL: $(Show $il)"
+                # Texture2D churn in the icon pipeline legitimately destroys its own textures. In corpse code
+                # allow only the one LoadExplosionSound failure cleanup; a later provenance gate proves its target.
+                $isCorpseType = $method.DeclaringType.FullName -match '^HawChow\.GTFOKillFeed\.(Corpse|FadeRendererCast)'
+                $isAudioCleanupSite = $method.DeclaringType.FullName -eq 'HawChow.GTFOKillFeed.CorpseFeedback' -and
+                    $method.Name -eq 'DiscardFailedClip' -and $operand.Name -eq 'Destroy' -and $declaring -eq 'UnityEngine.Object'
+                if ($isCorpseType -and $operand.Name -in @('Destroy', 'DestroyImmediate') -and
+                    $declaring -in @('UnityEngine.Object', 'UnityEngine.Object[]') -and -not $isAudioCleanupSite) {
+                    throw "$($method.FullName) calls $declaring::$($operand.Name): corpse cleanup may destroy only its freshly-created AudioClip. IL: $(Show $il)"
                 }
                 if ($operand.Name -in @('EnsureInitialized', 'InitializePool') -and $declaring -in @('Decay', 'ObjectPooler')) {
                     throw "$($method.FullName) calls $declaring::$($operand.Name): KillFeed must never create/initialise the native Decay pool."
@@ -749,8 +753,9 @@ try {
         throw 'CorpseVisualLease.Launch must set the collision detection mode once per body (review C3).'
     }
     $restoreIl = Get-Instructions (Get-Method $leaseType 'RestoreState')
-    if ((Find-Indices $restoreIl { param($ins) Test-MethodOperand $ins 'UnityEngine.Rigidbody' 'set_collisionDetectionMode' }).Count -ne 1) {
-        throw 'CorpseVisualLease.RestoreState must put the captured collision detection mode back (review C3).'
+    if (@(Find-Indices $restoreIl { param($ins) Test-MethodOperand $ins 'UnityEngine.Rigidbody' 'set_collisionDetectionMode' }).Count -ne 0 -or
+        @(Find-Indices $restoreIl { param($ins) Test-MethodOperand $ins 'HawChow.GTFOKillFeed.CorpseEngineBindings' 'ResetMotion' }).Count -ne 1) {
+        throw 'RestoreState must restore CCD only through the verified ResetMotion helper.'
     }
     # Hardening: the non-continuous branch must restore the mode the lease CAPTURED, not a hard-coded Discrete
     # (a pooled ragdoll may ship with ContinuousSpeculative). One accessor is the only source for both paths.
@@ -843,7 +848,7 @@ try {
     # The component is resolved by a helper and handed to CorpseFade.TryBegin. Both calls live in the EndAt
     # lambda (a compiler-generated nested type), so they are located across CorpseFeedback and its nested types.
     $nativeDecayCalls = 0
-    $tryBeginSeesDecay = $false
+    $playLambdas = 0
     $feedbackMethods = @($feedback.Methods)
     foreach ($nested in $feedback.NestedTypes) { $feedbackMethods += @($nested.Methods) }
     foreach ($candidate in $feedbackMethods) {
@@ -851,10 +856,19 @@ try {
         $candidateIl = Get-Instructions $candidate
         $decayCalls = Find-Indices $candidateIl { param($ins) Test-MethodOperand $ins 'HawChow.GTFOKillFeed.CorpseFeedback' 'NativeDecay' }
         $nativeDecayCalls += $decayCalls.Count
-        if ($decayCalls.Count -gt 0 -and (Find-Indices $candidateIl { param($ins) Test-MethodOperand $ins 'HawChow.GTFOKillFeed.CorpseFade' 'TryBegin' }).Count -gt 0) { $tryBeginSeesDecay = $true }
+        $starts = @(Find-Indices $candidateIl { param($ins) Test-MethodOperand $ins 'HawChow.GTFOKillFeed.CorpseFade' 'TryBegin' })
+        if ($starts.Count -gt 0) {
+            if ($starts.Count -ne 1 -or $decayCalls.Count -ne 1 -or $decayCalls[0] -ge $starts[0]) { throw 'Each fade lambda must resolve its corpse component before TryBegin.' }
+            $playLambdas++
+        }
+        elseif ($decayCalls.Count -gt 0) {
+            $zeros = @(Find-Indices $candidateIl { param($ins) Test-MethodOperand $ins 'HawChow.GTFOKillFeed.CorpseFade' 'StillWithoutInstances' })
+            $waits = @(Find-Indices $candidateIl { param($ins) Test-MethodOperand $ins 'HawChow.GTFOKillFeed.CorpseFade' 'WaitAtDeadline' })
+            if ($candidate.Name -ne 'Tick' -or $decayCalls.Count -ne 1 -or $zeros.Count -ne 1 -or $waits.Count -ne 1 -or $zeros[0] -ge $decayCalls[0] -or $decayCalls[0] -ge $waits[0]) { throw 'The only non-play lookup must check zero inventory and corpse ownership before waiting until EndAt.' }
+        }
     }
-    if ($nativeDecayCalls -ne 2 -or -not $tryBeginSeesDecay) {
-        throw "Both pre-cleanup and EndAt lambdas must resolve NativeDecay and pass it to TryBegin; found $nativeDecayCalls call(s), sameLambda=$tryBeginSeesDecay."
+    if ($nativeDecayCalls -ne 3 -or $playLambdas -ne 2) {
+        throw 'Expected two separate fade lambdas plus the inventory preflight in Tick.'
     }
     # Read-only lookup only: the component is fetched, never created.
     $nativeDecayIl = Get-Instructions (Get-Method $feedback 'NativeDecay')
@@ -1000,6 +1014,150 @@ try {
     if ($null -eq $maxTerminal -or -not $maxTerminal.HasConstant -or [int]$maxTerminal.Constant -lt 8) {
         throw 'CorpseFadeDiagnostics.MaxTerminalPerLevel must stay a compile-time constant >= 8 (F5: the first corpses of a level always print their terminal fade= line).'
     }
-    Write-Host "CORPSE_FADE_IL=PASS;DESTROY_CALLS=0;POOL_CREATION=0;MATERIAL_BLOCKS=0;TIMESCALE_WRITES=0;PATCHED_TYPES=$($patchTargets.Count);ES_PATCHES=$($esPatches.Count);DECAY_INITIALIZE_CALLS=$initializeCalls(only-DecayFadeTarget::Ready);NATIVE_PATH=corpse-own-Decay(HasTarget/Play/m_playing);POOL=arm-then-verify(borrow+Initialize+m_targetRenderer-proof+ArmVerdict,POOL_REFUSALS=pool-unverifiable|pool-arm-failed,PLAY_SITES=$($playSites.Count));RUNG1=trusted-RagdollInstance(no-living-host-gate);RUNG2_4=living-host-gated;NATIVE_REFUSALS=Reportable(no-decay-component|unsafe-decay-component|decay-already-playing);TERMINAL=own-budget(>=8/level,1-per-scheduleId);SWEEP=Probe-only;ENDAT=ShouldHideCorpse->{CorpseFadePrep.Attempt+Hide+Recycle}|kept{fade=skipped;reason=corpse-kept-inactive+cleanup=physics-kept}+CloseLaunch+RemoveAt;LAUNCH=TryLaunchOrAbandon(ClassifyRagdoll)+apply@0.02s+singleGate(CanApplyLaunch:live=activeInHierarchy,pointer,max2)+inactiveRetry(ShouldRetryInactiveLease->TryLateRagdoll)+stateReset(new/stale/discard)+closureInCloseLaunch(RemoveQueued|EndAt)+grace0.30s+speedFromBudget(0.5-30m)+cap42+inactiveStaysPending(reason=ragdoll-inactive,corpseKept);DECAY_DRIVERS=CorpseFade-only"
+    # ---- owned failed-audio cleanup and physics lease IL invariants (outside the fade-policy path) -----------
+    function Get-LocalIndex($instruction) {
+        $opcode = $instruction.OpCode.Name
+        if ($opcode -match '^(ldloc|stloc)\.(\d)$') { return [int]$Matches[2] }
+        if ($opcode -in @('ldloc', 'ldloc.s', 'stloc', 'stloc.s') -and $instruction.Operand -is [Mono.Cecil.Cil.VariableDefinition]) {
+            return [int]$instruction.Operand.Index
+        }
+        return -1
+    }
+
+    $audioCreateSites = @()
+    $discardSites = @()
+    $corpseDestroySites = @()
+    foreach ($scanMethod in $allMethods) {
+        foreach ($scanInstruction in $scanMethod.Body.Instructions) {
+            $scanOperand = $scanInstruction.Operand
+            if ($scanOperand -isnot [Mono.Cecil.MethodReference]) { continue }
+            $declaring = if ($null -ne $scanOperand.DeclaringType) { $scanOperand.DeclaringType.FullName } else { '' }
+            if ($scanOperand.Name -eq 'Create' -and $declaring -eq 'UnityEngine.AudioClip') {
+                $audioCreateSites += "$($scanMethod.DeclaringType.FullName)::$($scanMethod.Name)"
+            }
+            if ($declaring -eq 'HawChow.GTFOKillFeed.CorpseFeedback' -and $scanOperand.Name -eq 'DiscardFailedClip') { $discardSites += "$($scanMethod.DeclaringType.FullName)::$($scanMethod.Name)" }
+            $isCorpseType = $scanMethod.DeclaringType.FullName -match '^HawChow\.GTFOKillFeed\.(Corpse|FadeRendererCast)'
+            if ($isCorpseType -and $scanOperand.Name -in @('Destroy', 'DestroyImmediate') -and
+                $declaring -in @('UnityEngine.Object', 'UnityEngine.Object[]')) {
+                $corpseDestroySites += [pscustomobject]@{ Method = $scanMethod; Instruction = $scanInstruction }
+            }
+        }
+    }
+    if ($discardSites.Count -ne 1 -or $discardSites[0] -ne 'HawChow.GTFOKillFeed.CorpseFeedback::LoadExplosionSound') { throw 'Only the clip loader may call DiscardFailedClip.' }
+    if ($audioCreateSites.Count -ne 1 -or $audioCreateSites[0] -ne 'HawChow.GTFOKillFeed.CorpseFeedback::LoadExplosionSound') {
+        throw "The corpse custom clip must have one AudioClip.Create source, only LoadExplosionSound; found $($audioCreateSites -join ', ')."
+    }
+    if ($corpseDestroySites.Count -ne 1) {
+        throw "Corpse/fade code may contain exactly one failed-custom-AudioClip destroy call; found $($corpseDestroySites.Count)."
+    }
+    $destroySite = $corpseDestroySites[0]
+    $destroyOperand = $destroySite.Instruction.Operand
+    if ($destroySite.Method.DeclaringType.FullName -ne 'HawChow.GTFOKillFeed.CorpseFeedback' -or
+        $destroySite.Method.Name -ne 'DiscardFailedClip' -or !$destroySite.Method.IsPrivate -or !$destroySite.Method.IsStatic -or
+        $destroySite.Method.Parameters.Count -ne 1 -or $destroySite.Method.Parameters[0].ParameterType.FullName -ne 'UnityEngine.AudioClip' -or
+        $destroySite.Instruction.Previous.OpCode.Name -ne 'ldarg.0' -or $destroyOperand.Name -ne 'Destroy' -or
+        $destroyOperand.DeclaringType.FullName -ne 'UnityEngine.Object' -or $destroyOperand.Parameters.Count -ne 1 -or
+        $destroyOperand.Parameters[0].ParameterType.FullName -ne 'UnityEngine.Object') {
+        throw 'Only DiscardFailedClip(AudioClip) may call UnityEngine.Object.Destroy in corpse code.'
+    }
+    $loadAudio = Get-Method $feedback 'LoadExplosionSound'
+    $audioIl = Get-Instructions $loadAudio
+    $createCalls = Find-Indices $audioIl { param($ins) Test-MethodOperand $ins 'UnityEngine.AudioClip' 'Create' }
+    $destroyCalls = Find-Indices $audioIl { param($ins) Test-MethodOperand $ins 'HawChow.GTFOKillFeed.CorpseFeedback' 'DiscardFailedClip' }
+    if ($createCalls.Count -ne 1 -or $destroyCalls.Count -ne 1 -or
+        $audioIl[$createCalls[0]].Operand.ReturnType.FullName -ne 'UnityEngine.AudioClip') {
+        throw "LoadExplosionSound must contain exactly one AudioClip.Create and one failure-only Object.Destroy(AudioClip); create=$($createCalls.Count), destroy=$($destroyCalls.Count)."
+    }
+    $createAt = $createCalls[0]
+    $createStore = $null
+    for ($i = $createAt + 1; $i -lt [Math]::Min($audioIl.Count, $createAt + 4); $i++) {
+        if ($audioIl[$i].OpCode.Name -match '^stloc') { $createStore = $audioIl[$i]; break }
+    }
+    $createdLocal = if ($null -ne $createStore) { Get-LocalIndex $createStore } else { -1 }
+    if ($createdLocal -lt 0 -or $createdLocal -ge $loadAudio.Body.Variables.Count -or
+        $loadAudio.Body.Variables[$createdLocal].VariableType.FullName -ne 'UnityEngine.AudioClip') {
+        throw 'AudioClip.Create must be stored directly in a local typed AudioClip before upload/cleanup.'
+    }
+    if (@(Find-Indices $audioIl { param($ins) $ins.OpCode.Name -match '^stloc' -and (Get-LocalIndex $ins) -eq $createdLocal }).Count -ne 1) { throw 'The local returned by AudioClip.Create must never be overwritten.' }
+    $destroyAt = $destroyCalls[0]
+    if ($destroyAt -lt 1 -or (Get-LocalIndex $audioIl[$destroyAt - 1]) -ne $createdLocal -or
+        $audioIl[$destroyAt - 1].OpCode.Name -notmatch '^ldloc') {
+        throw 'The failure cleanup must destroy exactly the local returned by AudioClip.Create, not an arbitrary Unity object.'
+    }
+    $fillCalls = Find-Indices $audioIl { param($ins) Test-MethodOperand $ins 'HawChow.GTFOKillFeed.CorpseEngineBindings' 'FillBurst' }
+    if ($fillCalls.Count -ne 1 -or $audioIl[$fillCalls[0]].Operand.Parameters.Count -ne 5) {
+        throw 'LoadExplosionSound must upload its owned clip through the five-argument production FillBurst helper exactly once.'
+    }
+    Assert-OperandBefore $audioIl $fillCalls[0] { param($ins) ($ins.OpCode.Name -match '^ldloc' -and (Get-LocalIndex $ins) -eq $createdLocal) } 24 'FillBurst must receive the same freshly-created AudioClip that the failure path owns.'
+    $discardOffset = $audioIl[$destroyAt].Offset
+    $uploadOffset = $audioIl[$fillCalls[0]].Offset
+    $failureHandlers = @($loadAudio.Body.ExceptionHandlers | Where-Object {
+        $_.HandlerType -eq 'Catch' -and $_.TryStart.Offset -le $uploadOffset -and $uploadOffset -lt $_.TryEnd.Offset -and
+        $_.HandlerStart.Offset -le $discardOffset -and $discardOffset -lt $_.HandlerEnd.Offset })
+    if ($failureHandlers.Count -ne 1 -or $audioIl[$destroyAt + 1].OpCode.Name -ne 'rethrow') { throw 'Only the failed PCM upload handler may dispose its clip.' }
+
+    # Production helper stays on the four-parameter AudioClip.SetData wrapper (not the generated two-arg overload).
+    $bindings = $module.GetType('HawChow.GTFOKillFeed.CorpseEngineBindings')
+    if ($null -eq $bindings) { throw 'CorpseEngineBindings is missing.' }
+    $fillBurst = Get-Method $bindings 'FillBurst'
+    $fillIl = Get-Instructions $fillBurst
+    $setDataCalls = Find-Indices $fillIl { param($ins) Test-MethodOperand $ins 'UnityEngine.AudioClip' 'SetData' }
+    if ($setDataCalls.Count -ne 1) { throw "CorpseEngineBindings.FillBurst must call AudioClip.SetData exactly once; found $($setDataCalls.Count)." }
+    $setDataAt = $setDataCalls[0]
+    $setDataOperand = $fillIl[$setDataAt].Operand
+    if ($setDataOperand.Parameters.Count -ne 4 -or $setDataOperand.Parameters[0].ParameterType.FullName -ne 'UnityEngine.AudioClip' -or
+        $setDataOperand.Parameters[2].ParameterType.FullName -ne 'System.Int32' -or $setDataOperand.Parameters[3].ParameterType.FullName -ne 'System.Int32' -or
+        $fillIl[$setDataAt].OpCode.Name -ne 'call' -or $fillIl[$setDataAt - 1].OpCode.Name -ne 'ldc.i4.0') {
+        throw 'FillBurst must use the four-parameter AudioClip.SetData(clip, buffer, frames, offset=0) helper overload.'
+    }
+
+    # ResetMotion has exactly two lease call sites; restoring captured values and recycling use distinct arguments/order.
+    $leaseType = $module.GetType('HawChow.GTFOKillFeed.CorpseVisualLease')
+    if ($null -eq $leaseType) { throw 'CorpseVisualLease is missing.' }
+    $resetSites = @()
+    foreach ($scanMethod in $allMethods) {
+        foreach ($scanInstruction in $scanMethod.Body.Instructions) {
+            if (Test-MethodOperand $scanInstruction 'HawChow.GTFOKillFeed.CorpseEngineBindings' 'ResetMotion') {
+                $resetSites += "$($scanMethod.DeclaringType.FullName)::$($scanMethod.Name)"
+            }
+        }
+    }
+    if ($resetSites.Count -ne 2 -or @($resetSites | Where-Object { $_ -notin @('HawChow.GTFOKillFeed.CorpseVisualLease::RestoreState', 'HawChow.GTFOKillFeed.CorpseVisualLease::RecyclePhysics') }).Count -ne 0) {
+        throw "ResetMotion must be called only by CorpseVisualLease.RestoreState and RecyclePhysics, once each; found $($resetSites -join ', ')."
+    }
+    $restore = Get-Method $leaseType 'RestoreState'
+    $restoreIl = Get-Instructions $restore
+    $restoreReset = Find-Indices $restoreIl { param($ins) Test-MethodOperand $ins 'HawChow.GTFOKillFeed.CorpseEngineBindings' 'ResetMotion' }
+    $capturedMode = Find-Indices $restoreIl { param($ins) Test-MethodOperand $ins 'HawChow.GTFOKillFeed.CorpseVisualLease' 'CapturedDetection' }
+    if ($restoreReset.Count -ne 1 -or $capturedMode.Count -ne 1 -or $capturedMode[0] -ne $restoreReset[0] - 1 -or
+        $restoreIl[$restoreReset[0]].Operand.Parameters.Count -ne 3 -or
+        $restoreIl[$restoreReset[0]].Operand.Parameters[1].ParameterType.FullName -ne 'System.Boolean' -or
+        $restoreIl[$restoreReset[0]].Operand.Parameters[2].ParameterType.FullName -ne 'UnityEngine.CollisionDetectionMode') {
+        throw 'RestoreState must call ResetMotion(body, captured kinematic, CapturedDetection(i)) exactly once, with the captured mode as its third argument.'
+    }
+    Assert-OperandBefore $restoreIl $restoreReset[0] { param($ins) $ins.OpCode.Name -eq 'ldfld' -and $ins.Operand -is [Mono.Cecil.FieldReference] -and $ins.Operand.Name -eq '_kinematic' } 10 'RestoreState must pass the captured _kinematic[i] value to ResetMotion.'
+    $restoreGravity = Find-Indices $restoreIl { param($ins) Test-MethodOperand $ins 'UnityEngine.Rigidbody' 'set_useGravity' }
+    $restoreDrag = Find-Indices $restoreIl { param($ins) Test-MethodOperand $ins 'UnityEngine.Rigidbody' 'set_drag' }
+    $restoreCollisions = Find-Indices $restoreIl { param($ins) Test-MethodOperand $ins 'UnityEngine.Rigidbody' 'set_detectCollisions' }
+    $restoreCollider = Find-Indices $restoreIl { param($ins) Test-MethodOperand $ins 'UnityEngine.Collider' 'set_enabled' }
+    if ($restoreGravity.Count -ne 1 -or $restoreDrag.Count -ne 1 -or $restoreCollisions.Count -ne 1 -or $restoreCollider.Count -ne 1 -or
+        -not ($restoreReset[0] -lt $restoreGravity[0] -and $restoreGravity[0] -lt $restoreDrag[0] -and
+            $restoreDrag[0] -lt $restoreCollisions[0] -and $restoreCollisions[0] -lt $restoreCollider[0])) {
+        throw 'RestoreState order must be ResetMotion(captured state), then captured gravity/drag/collision restoration, then collider restoration.'
+    }
+    $recycle = Get-Method $leaseType 'RecyclePhysics'
+    $recycleIl = Get-Instructions $recycle
+    $recycleReset = Find-Indices $recycleIl { param($ins) Test-MethodOperand $ins 'HawChow.GTFOKillFeed.CorpseEngineBindings' 'ResetMotion' }
+    $recycleCollisions = Find-Indices $recycleIl { param($ins) Test-MethodOperand $ins 'UnityEngine.Rigidbody' 'set_detectCollisions' }
+    $recycleSleep = Find-Indices $recycleIl { param($ins) Test-MethodOperand $ins 'UnityEngine.Rigidbody' 'Sleep' }
+    $recycleCollider = Find-Indices $recycleIl { param($ins) Test-MethodOperand $ins 'UnityEngine.Collider' 'set_enabled' }
+    if ($recycleReset.Count -ne 1 -or $recycleReset[0] -lt 2 -or
+        $recycleIl[$recycleReset[0] - 2].OpCode.Name -ne 'ldc.i4.1' -or $recycleIl[$recycleReset[0] - 1].OpCode.Name -ne 'ldc.i4.0' -or
+        $recycleCollisions.Count -ne 1 -or $recycleSleep.Count -ne 1 -or $recycleCollider.Count -ne 1 -or
+        $recycleCollisions[0] -le $recycleReset[0] -or $recycleSleep[0] -le $recycleCollisions[0] -or $recycleCollider[0] -le $recycleSleep[0] -or
+        $recycleIl[$recycleCollisions[0] - 1].OpCode.Name -ne 'ldc.i4.0' -or $recycleIl[$recycleCollider[0] - 1].OpCode.Name -ne 'ldc.i4.0') {
+        throw 'RecyclePhysics must call ResetMotion(body, true, Discrete), then disable rigidbody collisions, Sleep, and disable colliders in order.'
+    }
+    Write-Host "CORPSE_FADE_IL=PASS;DESTROY_CALLS=1(custom-AudioClip-failure-only);PHYSICS=RestoreState(captured-ResetMotion-then-restore)+RecyclePhysics(true,Discrete->collisions-off->Sleep);AUDIO=unique-AudioClip.Create->failed-clip-destroy+four-arg-SetData;POOL_CREATION=0;MATERIAL_BLOCKS=0;TIMESCALE_WRITES=0;PATCHED_TYPES=$($patchTargets.Count);ES_PATCHES=$($esPatches.Count);DECAY_INITIALIZE_CALLS=$initializeCalls(only-DecayFadeTarget::Ready);NATIVE_PATH=corpse-own-Decay(HasTarget/Play/m_playing);POOL=arm-then-verify(borrow+Initialize+m_targetRenderer-proof+ArmVerdict,POOL_REFUSALS=pool-unverifiable|pool-arm-failed,PLAY_SITES=$($playSites.Count));RUNG1=trusted-RagdollInstance(no-living-host-gate);RUNG2_4=living-host-gated;NATIVE_REFUSALS=Reportable(no-decay-component|unsafe-decay-component|decay-already-playing);TERMINAL=own-budget(>=8/level,1-per-scheduleId);SWEEP=Probe-only;ENDAT=ShouldHideCorpse->{CorpseFadePrep.Attempt+Hide+Recycle}|kept{fade=skipped;reason=corpse-kept-inactive+cleanup=physics-kept}+CloseLaunch+RemoveAt;LAUNCH=TryLaunchOrAbandon(ClassifyRagdoll)+apply@0.02s+singleGate(CanApplyLaunch:live=activeInHierarchy,pointer,max2)+inactiveRetry(ShouldRetryInactiveLease->TryLateRagdoll)+stateReset(new/stale/discard)+closureInCloseLaunch(RemoveQueued|EndAt)+grace0.30s+speedFromBudget(0.5-30m)+cap42+inactiveStaysPending(reason=ragdoll-inactive,corpseKept);DECAY_DRIVERS=CorpseFade-only"
 }
 finally { $assembly.Dispose() }

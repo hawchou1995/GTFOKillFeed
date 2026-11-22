@@ -116,7 +116,7 @@ public sealed class CorpseVisualLease : MonoBehaviour
         float cap = maxSpeed > 0f ? maxSpeed : FeedbackPolicy.LegacyVelocityCap;
         for (int i = 0; i < _bodies.Length; i++)
         {
-            var body = _bodies[i]; if (body == null) continue;
+            var body = _bodies[i]; if (body == null || body.isKinematic) continue;
             Vector3 delta = body.position - Origins[i];
             if (FeedbackPolicy.ShouldClampTravel(delta.sqrMagnitude, maxDistance))
             {
@@ -159,8 +159,8 @@ public sealed class CorpseVisualLease : MonoBehaviour
             try
             {
                 var body = _bodies[i]; if (body == null) continue;
-                body.velocity = Vector3.zero; body.angularVelocity = Vector3.zero;
-                body.isKinematic = true; body.detectCollisions = false; body.Sleep();
+                CorpseEngineBindings.ResetMotion(body, true, CollisionDetectionMode.Discrete);
+                body.detectCollisions = false; body.Sleep();
             }
             catch { }
         if (_colliders != null) for (int i = 0; i < _colliders.Length; i++)
@@ -174,9 +174,8 @@ public sealed class CorpseVisualLease : MonoBehaviour
             try
             {
                 var body = _bodies[i]; if (body == null) continue;
-                body.velocity = Vector3.zero; body.angularVelocity = Vector3.zero;
-                body.isKinematic = _kinematic[i]; body.useGravity = _gravity[i]; body.drag = _drag[i]; body.detectCollisions = _detectCollisions[i];
-                body.collisionDetectionMode = CapturedDetection(i);
+                CorpseEngineBindings.ResetMotion(body, _kinematic[i], CapturedDetection(i));
+                body.useGravity = _gravity[i]; body.drag = _drag[i]; body.detectCollisions = _detectCollisions[i];
             }
             catch { }
         if (_colliders != null) for (int i = 0; i < _colliders.Length; i++)
@@ -538,13 +537,21 @@ internal static class CorpseFeedback
                     && FeedbackPolicy.ShouldHideCorpse(item.LaunchApplications, item.RagdollInactive)
                     && (!switches.LaunchActive || item.LaunchApplications > 0 || item.LaunchClosed))
                 {
-                    bool prepared = CorpseFadePrep.Attempt(() => FadeRenderer(item), fadeTarget =>
+                    bool wait = false;
+                    try { wait = !item.OffSceneCleanupApplied && DeathLedger.InLevel && CorpseFade.StillWithoutInstances() && NativeDecay(item) == null; }
+                    catch (Exception error) { Warn(error); }
+                    if (wait)
+                        item.Fade.Observe(age, CorpseFade.WaitAtDeadline());
+                    else
                     {
-                        item.Fade.Observe(age, CorpseFade.TryBegin(fadeTarget as Renderer, item.OffSceneCleanupApplied,
-                            DeathLedger.InLevel, item.Sequence, NativeDecay(item), deferTransient: true));
-                        return true;
-                    }, Warn);
-                    if (!prepared) item.Fade.Observe(age, CorpseFadeAttempt.Finished);
+                        bool prepared = CorpseFadePrep.Attempt(() => FadeRenderer(item), fadeTarget =>
+                        {
+                            item.Fade.Observe(age, CorpseFade.TryBegin(fadeTarget as Renderer, item.OffSceneCleanupApplied,
+                                DeathLedger.InLevel, item.Sequence, NativeDecay(item), deferTransient: true));
+                            return true;
+                        }, Warn);
+                        if (!prepared) item.Fade.Observe(age, CorpseFadeAttempt.Finished);
+                    }
                 }
                 if (age >= item.EndAt)
                 {
@@ -666,13 +673,27 @@ internal static class CorpseFeedback
                 samples[i] = sample / 32768f;
             }
             AudioClip clip = AudioClip.Create("KillFeed_CorpseBurst", sampleCount, channels, sampleRate, false);
-            if (clip == null || !clip.SetData(new Il2CppStructArray<float>(samples), 0))
-                throw new InvalidOperationException("Unity could not load the embedded corpse burst samples.");
-            _customExplosionClip = clip;
+            try
+            {
+                CorpseEngineBindings.FillBurst(clip, new Il2CppStructArray<float>(samples), sampleCount, channels, sampleRate);
+                _customExplosionClip = clip;
+            }
+            catch
+            {
+                DiscardFailedClip(clip);
+                throw;
+            }
+            Plugin.Instance?.Log.LogInfo($"[CORPSE] audio=loaded;frames={sampleCount};channels={channels};hz={sampleRate};upload=explicit-frames");
         }
         catch (Exception error) { Warn(error); }
         return _customExplosionClip;
     }
+    private static void DiscardFailedClip(AudioClip owned)
+    {
+        try { if (owned != null) UnityEngine.Object.Destroy(owned); }
+        catch (Exception cleanupError) { Warn(cleanupError); }
+    }
+
     private static CorpseVisualLease Lease(GameObject obj)
     {
         var lease = obj.GetComponent<CorpseVisualLease>();

@@ -11,7 +11,9 @@
 - `v1.2.21`：51 个生产 `.cs`。该版复现命令和 SHA256 保留在该 tag 的本文件。
 - 1.2.24 从 `6f134510dd4739632ae450b72db38b883586a85e`（1.2.21）升级。54 个生产 `.cs` 保留作者代码，按公开布局置于 `src/HawChow.GTFOKillFeed/`；新增 `DamageNumberPaint.cs`、`StaggerHitCapture.cs`、`StaggerHitPolicy.cs`。根目录的 SDK pin、逐文件换行规则和 `src/` 内的嵌入资源布局不变。
 
-## 1.2.24：从公开源码复现实测 DLL
+- `v1.2.27` 增加 `CorpseEngineBindings.cs` 及尸体引擎边界回放；1.2.24 的哈希与验证说明保留在其 tag。
+
+## 1.2.27：从公开源码复现实测 DLL
 
 以下是 Windows PowerShell 示例。从仓库根开始，设置 `$env:GTFO_DIR` 指向自己合法持有的 Survival 环境（只读，需有 `BepInEx/core` 和 `BepInEx/interop`）；另准备一个**仓库外**的临时目录。不要安装到游戏、复制 profile 或提交 `bin/`、`obj/`、日志和依赖 DLL。
 
@@ -24,18 +26,18 @@ dotnet --version                    # 本次为 8.0.428
 dotnet build "$repo/src/GTFOKillFeed.csproj" -c Release --configfile "$repo/nuget.config"
 if ($LASTEXITCODE) { throw 'plugin build failed' }
 $dll = "$repo/src/bin/Release/GTFOKillFeed.dll"
-$expected = '65D4F79D004BCD61F01CBC65242808DA6B96BFD66CD05E710EECB7DFF28A7C6C'
+$expected = 'C034A9C286814E0176E0219AC70A469F69AD559BF2D7EBB924FE03356BB80053'
 if ((Get-FileHash -Algorithm SHA256 $dll).Hash -ne $expected) { throw 'DLL hash mismatch' }
 ```
 
-实测重建结果：**1,333,248 字节**，FileVersion `1.2.24.0`，0 警告、0 错误；SHA256 与 Survival 实测 DLL 一致。公开工程使用作者的编译单元和嵌入资源，不使用反编译桩；`GTFO_DIR` 不提供本机默认路径，引用不会作为插件依赖复制到发布目录。
+实测重建结果：**1,342,976 字节**，FileVersion `1.2.27.0`，0 警告、0 错误；SHA256 与 Survival 实测 DLL 一致。公开工程使用作者的编译单元和嵌入资源，不使用反编译桩；`GTFO_DIR` 不提供本机默认路径，引用不会作为插件依赖复制到发布目录。
 
-### 五组测试与编译后 IL 检查
+### 六组测试与编译后 IL 检查
 
 在同一 PowerShell 会话、同一仓库外工作目录继续：
 
 ```powershell
-foreach ($name in 'GTFOKillFeed.Smoke','GTFOKillFeed.ConfigSmoke','GTFOKillFeed.HudReplay','KillFeed.Policy.Tests','KillFeed.Tests','KillFeed.IlGuard') {
+foreach ($name in 'GTFOKillFeed.Smoke','GTFOKillFeed.ConfigSmoke','GTFOKillFeed.HudReplay','GTFOKillFeed.CorpseReplay','KillFeed.Policy.Tests','KillFeed.Tests','KillFeed.IlGuard') {
     $project = "$repo/tests/$name"
     dotnet build "$project/$name.csproj" -c Release --configfile "$repo/nuget.config"
     if ($LASTEXITCODE) { throw "build failed: $name" }
@@ -47,9 +49,10 @@ foreach ($name in 'GTFOKillFeed.Smoke','GTFOKillFeed.ConfigSmoke','GTFOKillFeed.
 
 | 工程 | 本次结果 | 检查对象 |
 |---|---:|---|
-| `GTFOKillFeed.Smoke` | 1542 断言通过 | 含淡出输入拒绝、部位分组、硬直归属、合并弹丸分色和绘制顺序 |
+| `GTFOKillFeed.Smoke` | 1609 断言通过 | 含淡出输入拒绝、部位分组、硬直归属、合并弹丸分色和绘制顺序 |
 | `GTFOKillFeed.ConfigSmoke` | 97 断言通过 | 真实 BepInEx `ConfigFile` 的绑定、迁移与热重载 |
 | `GTFOKillFeed.HudReplay` | 20 断言通过 | 生产计数 HUD 的 Tick/Draw；引擎 API 替身，不是 Unity 截图 |
+| `GTFOKillFeed.CorpseReplay` | 48 种切换 / 7 个音频用例 | 引擎 API 边界回放 |
 | `KillFeed.Policy.Tests` | 424 通过 / 0 失败 | 视觉策略、投影与避让决策 |
 | `KillFeed.Tests` | 407 通过 / 0 失败 | 配置、生产接线、回收与文档门禁 |
 | `KillFeed.IlGuard` | `ILGUARD failures=0` | 从实测哈希对应的 DLL 读取编译后接线 |
@@ -67,9 +70,9 @@ foreach ($name in (@('CorpseFadeIl','DamageNumberOpacityIl','GlueWieldWiring','S
 
 预期：9/9 退出 0。`Test-CorpseFadeIl` 和 `Test-EnemyBarStaggerIl` 检查淡出目标筛选与尸体自有副本校验；`Test-StaggerInkIl` 检查命中回执和实际绘制顺序；`Test-ShotgunVolleyIl` 检查弹丸归属与唯一合并出口。配置清单在仓库根运行 `python tools/feature_switch_inventory.py` 可再生成，当前为 111 个键。
 
-**证据边界：** 这里的离线检查不启动游戏。另有 Survival FX.3 Overload 的实测：淡出开启，黑屏未复现，有 4 条淡出开始回执；另有 1 条 `Decay.InitializeInternal` 原生空引用，调用归属及画面影响待复测。不得据此断言原生异常已消除，或棱彩与档位叠加已在该局逐项验证。
+**证据边界：** 离线回放不替代 Unity 实机观感。Survival 已验证 1.2.27 配置热重载；跨关淡出仍待进一步实测，原生空引用的调用来源未定。
 
-下方 §0–§5 保留旧版复现说明。旧版基线、文档与打包脚本的布局和期望值属于相应历史 tag，不是 1.2.24 的发布门禁。
+下方 §0–§5 保留旧版复现说明。旧版基线、文档与打包脚本的布局和期望值属于相应历史 tag，不是 1.2.27 的发布门禁。
 
 ## 0. 前置
 

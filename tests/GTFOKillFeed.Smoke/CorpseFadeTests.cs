@@ -65,7 +65,7 @@ internal static class CorpseFadeTests
         check(CorpseFadePolicy.IsReportable(CorpseFadeSkip.PoolMissing) && !CorpseFadePolicy.IsReportable(CorpseFadeSkip.Disabled)
             && !CorpseFadePolicy.IsReportable(CorpseFadeSkip.NoRenderer) && !CorpseFadePolicy.IsReportable(CorpseFadeSkip.OffLevel),
             "fade reason: normal user choices stay silent, environment surprises are reportable");
-        check(CorpseFadePolicy.IsStarted(CorpseFadeOutcome.Started) && CorpseFadePolicy.IsStarted(CorpseFadeOutcome.StartedProbeUnknown)
+        check(CorpseFadePolicy.IsStarted(CorpseFadeOutcome.Started) && !CorpseFadePolicy.IsStarted(CorpseFadeOutcome.StartedProbeUnknown)
             && !CorpseFadePolicy.IsStarted(CorpseFadeOutcome.PlayNotObserved),
             "fade reason: only a tracked dissolve counts as started");
 
@@ -253,7 +253,7 @@ internal static class CorpseFadeTests
         check(!coordinator.TryStart(target, target.Renderer, out CorpseFadeOutcome notReady) && notReady == CorpseFadeOutcome.PoolUnverifiable
             && coordinator.Active == 0
             && target.Cleanups == 1 && target.Returns == 1 && coordinator.ManualReleases == 1 && coordinator.Recovered == 1
-            && target.Calls[target.Calls.IndexOf("cleanup") + 1] == "return"
+            && target.Calls[target.Calls.IndexOf("cleanup") - 1] == "owns" && target.Calls[target.Calls.IndexOf("return") - 1] == "owns"
             && target.Calls[target.Calls.Count - 1] == "return"
             && !target.Played && target.Plays == 0,
             "fade (1.2.19 F2): an unprovable borrowed instance is Cleanup'ed then Return'ed exactly once, in that order, and never Played");
@@ -277,8 +277,8 @@ internal static class CorpseFadeTests
         check(!coordinator.TryStart(target, target.Renderer, out CorpseFadeOutcome swallowed) && swallowed == CorpseFadeOutcome.PlayNotObserved
             && coordinator.Active == 0
             && target.Played && target.Cleanups == 1 && target.Returns == 1 && !target.Playing
-            && target.Calls[target.Calls.IndexOf("cleanup") + 1] == "return",
-            "fade (R5): a swallowed Play is detected through m_playing and released exactly once");
+            && string.Join(",", target.Calls).EndsWith("owns,cleanup,owns,return", StringComparison.Ordinal),
+            "fade (R5): a swallowed Play needs two ownership checks and exactly one confirmed release");
         target.SwallowPlay = false;
         target.Reset();
         coordinator.ResetCounters();
@@ -452,6 +452,102 @@ internal static class CorpseFadeTests
         terminal.Reset();
         check(terminal.TerminalLines == 0 && terminal.ClaimTerminal(1) && terminal.AllowLine("native-not-initialized"),
             "F5: leaving the level restores the terminal allowance together with the reason budget");
+
+        // ---- 1.2.26: a pool the GAME holds is not re-asked per corpse, and a pool that recovers is used at once ----
+        // The 1.2.25 session opened with started=9/0/0 and ended a level with 4,401 deferred attempts and 2,200 skipped
+        // corpses, every one of them with active=0: no slot of ours was ever held, so the emptiness belonged to the
+        // game and a second attempt a quarter of a second later could not have answered differently.
+        var backoff = new CorpseFadeBackoff();
+        check(backoff.MayAttempt(true) && !backoff.Starved && backoff.Misses == 0,
+            "fade backoff (1.2.26): a ready pool is always asked and holds no miss");
+        check(backoff.Observe(false, 2, 10f) == CorpseFadeBackoffStep.None && backoff.Misses == 0 && !backoff.Starved,
+            "fade backoff (1.2.26): an empty pool while OUR OWN fades hold slots is not the game's starvation, so it stays retryable");
+        check(backoff.Observe(false, 0, 10f) == CorpseFadeBackoffStep.None && backoff.Misses == 1 && backoff.MayAttempt(false),
+            "fade backoff (1.2.26): the first empty answer with no slot of ours is still worth one retry");
+        check(backoff.Observe(false, 0, 10.25f) == CorpseFadeBackoffStep.Starved && backoff.Starved && !backoff.MayAttempt(false),
+            "fade backoff (1.2.26): the second empty answer with no slot of ours stops the per-corpse ladder");
+        int reopened = 0;
+        for (int i = 0; i < 200; i++)
+        {
+            if (backoff.Observe(false, 0, 10.5f + i * 0.01f) != CorpseFadeBackoffStep.None || backoff.MayAttempt(false)) reopened++;
+        }
+        check(reopened == 0 && backoff.Starved,
+            "fade backoff (1.2.26): 200 more corpses inside the cooldown neither re-open the gate nor report a transition (that is the 2,200-corpse re-ask) ");
+        check(backoff.Observe(false, 0, 10.25f + CorpseFadeBackoff.CooldownSeconds) == CorpseFadeBackoffStep.CooldownExpired
+            && !backoff.Starved && backoff.Misses == 0 && backoff.MayAttempt(false),
+            "fade backoff (1.2.26): the cooldown expires into exactly one more asking attempt");
+        backoff.Observe(false, 0, 100f);
+        backoff.Observe(false, 0, 100.25f);
+        check(backoff.Starved
+            && backoff.Observe(true, 0, 101f) == CorpseFadeBackoffStep.Recovered
+            && !backoff.Starved && backoff.MayAttempt(false),
+            "fade backoff (1.2.26): a pool that answers ready is used by the very next corpse - recovery never waits for the cooldown");
+        backoff.Observe(false, 0, 200f);
+        backoff.Observe(false, 0, 200.25f);
+        backoff.Reset();
+        check(!backoff.Starved && backoff.Misses == 0 && backoff.MayAttempt(false),
+            "fade backoff (1.2.26): a level change clears the cooldown, so a re-entered level asks on its first corpse");
+        check(!CorpseFadeRetry.IsTransient(CorpseFadeSkip.PoolStarved)
+            && CorpseFadeRetry.IsTransient(CorpseFadeSkip.NoFreeInstance)
+            && CorpseFadeRetry.IsTransient(CorpseFadePolicy.SkipReason(Plan(pool: CorpseFadePoolState.Exhausted))),
+            "fade backoff (1.2.26): the deliberate back-off is NOT transient (one preparation attempt, not three), while a pool we are still willing to ask stays retryable");
+        check(CorpseFadePolicy.IsReportable(CorpseFadeSkip.PoolStarved)
+            && Reason(CorpseFadeSkip.PoolStarved) == "pool-starved"
+            && Reason(CorpseFadeSkip.PoolStarved) != Reason(CorpseFadeSkip.NoFreeInstance),
+            "fade backoff (1.2.26): 'we declined to ask' and 'the pool was empty' stay distinct log tokens");
+
+        // ---- 1.2.26: an arm that stopped halfway is never called armed, and never prints fade=begun ----
+        bool Arm(bool bound = true, bool live = true, long copy = 30, long source = 10, long old = 20, bool playing = false)
+            => CorpseFadePolicy.ArmComplete(bound, live, copy, source, old, playing);
+        check(Arm() && Arm(old: 0), "fade arm: fresh mesh copy on our target, with or without a previous copy");
+        check(!Arm(copy: 0) && !Arm(live: false), "fade arm: missing or unreadable mesh cannot complete a partial arm");
+        check(!Arm(bound: false) && !Arm(source: 0) && !Arm(playing: true), "fade arm: wrong target, empty source or playing component refused");
+        check(!Arm(copy: 10) && !Arm(copy: 20), "fade arm: source and previous renderer cannot stand in for a fresh copy");
+        foreach (string fault in new[] { "playing", "unknown", "pool-changed", "gone", "already-free", "not-used",
+            "cleanup-throws", "cleanup-incomplete", "reused-after-cleanup", "return-throws", "return-unconfirmed", "healthy" })
+        {
+            var t = new MockFadeTarget { ReadyFails = true, Fault = fault };
+            var c = new CorpseFadeCoordinator();
+            bool ok = c.TryStart(t, t.Renderer, out _);
+            bool returned = fault == "healthy";
+            bool attemptedReturn = returned || fault.StartsWith("return-");
+            bool attemptedClean = attemptedReturn || fault.StartsWith("cleanup-") || fault == "reused-after-cleanup";
+            check(!ok && t.Plays == 0 && t.Cleanups == (attemptedClean ? 1 : 0) && t.Returns == (attemptedReturn ? 1 : 0)
+                && c.ManualReleases == (returned ? 1 : 0) && c.Recovered == c.ManualReleases
+                && c.ReleaseUnconfirmed == (returned ? 0 : 1), "failed borrow writes and confirmed count: " + fault);
+            if (!returned) continue;
+            t.RepeatHandle = true;
+            c.TryStart(t, t.Renderer, out _);
+            check(t.Returns == 1 && t.Cleanups == 1 && c.ManualReleases == 1 && c.ReleaseUnconfirmed == 1,
+                "an already returned handle cannot be cleaned, returned or counted twice");
+        }
+        check(CorpseFadePoolFacts.Missing.Describe()
+                == "pool=missing;free=unreadable;used=unreadable;count=unreadable;min=unreadable;dynamic=False;steal=False"
+            && !CorpseFadePoolFacts.Missing.IsReady,
+            "fade pool (1.2.26): a missing pool reports unreadable counts, never a zero it did not observe");
+        var facts = new CorpseFadePoolFacts(CorpseFadePoolState.Exhausted, 0, 2, 2, 1, false, true);
+        check(facts.Describe() == "pool=exhausted;free=0;used=2;count=2;min=1;dynamic=False;steal=True" && !facts.IsReady,
+            "fade pool (1.2.26): free=0 used=count min dynamic is the receipt that tells 'at its ceiling, cannot grow' from 'busy for a moment'");
+        check(new CorpseFadePoolFacts(CorpseFadePoolState.Ready, 1, 0, 1, 1, false, true).IsReady,
+            "fade pool (1.2.26): only a free instance makes the pool ready");
+        var zero = CorpseFadePoolFacts.Classify(0, 0, 0);
+        check(zero == CorpseFadePoolState.ZeroInstances && Skip(Plan(pool: zero)) == CorpseFadeSkip.ZeroInstances
+            && !CorpseFadePolicy.ShouldAttempt(Plan(pool: zero)) && Reason(Skip(Plan(pool: zero))) == "pool-zero-instances",
+            "Survival zero inventory is not a busy pool and cannot borrow");
+        check(CorpseFadePoolFacts.Classify(0, 12, 12) == CorpseFadePoolState.Exhausted && CorpseFadePoolFacts.Classify(1, 11, 12) == CorpseFadePoolState.Ready
+            && CorpseFadePoolFacts.Classify(0, -1, 0) == CorpseFadePoolState.Missing, "busy, recovered and unreadable inventories remain distinct");
+        check(CorpseFadePolicy.ShouldAttemptNative(CorpseFadePolicy.NativePath(Plan(pool: zero), true, 0, true, false))
+            && !CorpseFadePolicy.ShouldAttemptNative(CorpseFadePolicy.NativePath(Plan(pool: zero, playPatched: true), true, 0, true, false)),
+            "zero inventory does not suppress an armed corpse component or override a third-party Play patch");
+        foreach (bool recovered in new[] { false, true })
+        {
+            var retry = new CorpseFadeRetry();
+            retry.Observe(0.51f, CorpseFadeAttempt.AtDeadline);
+            check(!retry.Resolved && !retry.Started && !retry.CanPrepare(0.8f, 1f), "no repeated pre-cleanup scan after observed zero inventory");
+            var state = recovered ? CorpseFadePoolFacts.Classify(1, 0, 1) : zero;
+            retry.Observe(1f, CorpseFadePolicy.ShouldAttempt(Plan(pool: state)) ? CorpseFadeAttempt.Started : CorpseFadeAttempt.Finished);
+            check(retry.Resolved && retry.Started == recovered && retry.Attempts == 2, "one fresh deadline check, never a fake start or extra lifetime");
+        }
     }
 
     private static CorpseFadeSkip Skip(in CorpseFadePlan plan) => CorpseFadePolicy.SkipReason(plan);
@@ -487,6 +583,8 @@ internal static class CorpseFadeTests
         internal bool ReadyFails, ThrowOnReady;
         internal bool SwallowPlay, ThrowOnPlay, SetPlayingOnThrow, RepeatHandle;
         internal bool Alive = true, ThrowOnProbe, ThrowOnProbeAfterPlay;
+        internal string Fault;
+        internal bool InFree;
 
         // Per-handle truth, because two pooled instances can be alive at the same time.
         private readonly HashSet<object> _playing = new();
@@ -520,6 +618,7 @@ internal static class CorpseFadeTests
             if (Borrow == CorpseFadeBorrow.NoFreeInstance) return CorpseFadeBorrow.NoFreeInstance;
             if (Borrow != CorpseFadeBorrow.Ok) return CorpseFadeBorrow.Error;
             if (RepeatHandle && LastHandle != null) { handle = LastHandle; return CorpseFadeBorrow.Ok; }
+            InFree = false;
             handle = new object();   // every borrow hands out a distinct pooled instance
             LastHandle = handle;
             return CorpseFadeBorrow.Ok;
@@ -555,16 +654,30 @@ internal static class CorpseFadeTests
             return (_forcePlaying || _playing.Contains(handle)) ? CorpseFadeState.Playing : CorpseFadeState.Idle;
         }
 
-        public void Cleanup(object handle)
+        public bool OwnsIdleBorrow(object handle)
+        {
+            Calls.Add("owns");
+            if (Fault == "unknown") throw new InvalidOperationException("unreadable");
+            return CorpseFadePolicy.MayReturn(ReferenceEquals(LastHandle, handle) && Fault != "pool-changed",
+                Alive && Fault != "gone", Fault == "playing" ? CorpseFadeState.Playing : CorpseFadeState.Idle,
+                Fault != "not-used" && (Fault != "reused-after-cleanup" || Cleanups == 0), InFree || Fault == "already-free");
+        }
+
+        public bool Cleanup(object handle)
         {
             Cleanups++;
             Calls.Add("cleanup");
+            if (Fault == "cleanup-throws") throw new InvalidOperationException("cleanup");
+            return Fault != "cleanup-incomplete";
         }
 
-        public void Return(object handle)
+        public bool Return(object handle)
         {
             Returns++;
             Calls.Add("return");
+            if (Fault == "return-throws") throw new InvalidOperationException("return");
+            InFree = true;
+            return Fault != "return-unconfirmed";
         }
     }
 }

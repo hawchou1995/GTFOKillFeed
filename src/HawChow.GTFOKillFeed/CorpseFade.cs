@@ -12,8 +12,8 @@ namespace HawChow.GTFOKillFeed;
 //   * never creates the pool (no asset loading, no pool initialisation) - if the pool is absent we skip;
 //   * never patches Decay, never detours the death state machine, never touches shared materials (Decay
 //     drives a per-instance MaterialPropertyBlock on its own cloned renderer).
-// Everything it borrows is handed back exactly once: the game's own Update() returns it when
-// stopAction==Deactivate, and if Play never started we Cleanup() the clone and pool.Return() once.
+// Playing instances are left to the game. A failed borrow is only returned after independent proof before
+// both writes; an idle observation by itself says nothing about the free list.
 //
 // Diagnostics (1.2.9 review): the reason vocabulary is split per gate/step (pool-missing,
 // no-free-instance, borrow-error, not-initialized, play-not-observed, play-threw, probe-unknown,
@@ -212,7 +212,7 @@ internal static class FadeRendererCast
         {
             if (!TryResolve(copy, out SkinnedMeshRenderer skinned, out MeshRenderer mesh)) return false;
             Mesh data = skinned != null ? skinned.sharedMesh : mesh.GetComponent<MeshFilter>()?.sharedMesh;
-            return data != null;
+            return data != null && data.vertexCount > 0;
         }
         catch (Exception error) { CorpseFade.Warn(error); return false; }
     }
@@ -254,6 +254,19 @@ internal static class CorpseFade
     private static bool _patchChecked;
     private static bool _playPatched;
     private static int _started, _deferred, _skipped, _failed;
+    // 1.2.26: the pooled path's own back-off (see CorpseFadeBackoff). A struct on purpose: it is per-level state
+    // that is reset with the level, and it never touches a native object.
+    private static CorpseFadeBackoff _backoff;
+    // How many corpses this level declined to even ask the pool about, and the last pool shape we read - both
+    // printed once at the level boundary, so "the dissolve stopped" and "the log stopped recording it" differ.
+    private static int _backedOff;
+    private static CorpseFadePoolFacts _lastPoolFacts = CorpseFadePoolFacts.Missing;
+    private static int _zeroSkipped, _deadlineWaits;
+    // A cached zero alone is never enough: a newly available slot must restore normal preparation.
+    internal static bool StillWithoutInstances() => _lastPoolFacts.State == CorpseFadePoolState.ZeroInstances
+        && _patchChecked && !_playPatched && Plugin.CorpseFade?.Value == true && Plugin.CorpseEffects?.Value != false
+        && !Paused() && PoolFacts().State == CorpseFadePoolState.ZeroInstances;
+    internal static CorpseFadeAttempt WaitAtDeadline() { _deadlineWaits++; return CorpseFadeAttempt.AtDeadline; }
 
     internal static int Active => Coordinator.Active;
 
@@ -279,32 +292,73 @@ internal static class CorpseFade
                 if (_playPatched && Diagnostics.AllowLine(CorpseFadePolicy.Reason(CorpseFadeSkip.PatchedByThirdParty)))
                     Plugin.Instance?.Log.LogInfo("[CORPSE] fade=disabled;reason=" + CorpseFadePolicy.Reason(CorpseFadeSkip.PatchedByThirdParty) + ";detail=Decay.Play has third-party patches");
             }
+            // 1.2.26: the cheap, side-effect-free gates are answered ONCE, in the order the policy asks them, so the
+            // back-off can decide whether the hierarchy walk below is worth anything at all. Before this, every
+            // corpse in a swarm paid a subtree/ancestor/sibling scan (1.2.22 hazard) and up to three attempts to
+            // learn the same unchanged fact: the pool is held by the game.
+            bool fadeEnabled = Plugin.CorpseFade != null && Plugin.CorpseFade.Value;
+            bool corpseEffects = Plugin.CorpseEffects == null || Plugin.CorpseEffects.Value;
+            bool paused = Paused();
+            bool prefabSafe = PrefabIsSafe();
+            CorpseFadePoolFacts poolFacts = PoolFacts();
+            _lastPoolFacts = poolFacts;
+            // Every cheap gate at once: while any of them is shut the pool is neither observed nor backed off, so a
+            // disabled/paused/lobby corpse neither logs a back-off nor arms a cooldown.
+            bool gateOpen = fadeEnabled && corpseEffects && inLevel && !paused && !_playPatched && prefabSafe;
+            if (poolFacts.State == CorpseFadePoolState.Missing || poolFacts.State == CorpseFadePoolState.ZeroInstances) _backoff.Reset();
+            else if (gateOpen) LogBackoff(_backoff.Observe(poolFacts.IsReady, Coordinator.Active, Now()), poolFacts);
+            // The pooled path is the ONLY path a starved pool can refuse, so a corpse whose own Decay component can
+            // take the dissolve must still be tried: `native == null` is what makes this gate safe.
+            if (gateOpen && native == null && !poolFacts.IsReady && poolFacts.State == CorpseFadePoolState.Exhausted
+                && !_backoff.MayAttempt(false))
+            {
+                // 主动退避: we deliberately do not ask. One bounded terminal line per corpse says so; there is no
+                // retry ladder, no borrow, no hazard scan and no native call - the corpse keeps the shipped
+                // instant hide at its own deadline, and a pool that recovers is used by the next corpse.
+                _backedOff++;
+                LogSkip(CorpseFadeSkip.PoolStarved, CorpseFadeHazard.None, scheduleId);
+                return CorpseFadeAttempt.Finished;
+            }
             // 1.2.22: the input is classified once per attempt. A dangerous source is refused by the POLICY
             // gate below (reason=hazardous-input) - never borrowed, never armed, never cloned. The corpse-own
             // component path is untouched: it plays an already-armed component and creates no copy.
             CorpseFadeHazard hazard = CorpseFadePolicy.Hazard(FadeRendererCast.Observe(renderer));
             var plan = new CorpseFadePlan(
-                Plugin.CorpseFade != null && Plugin.CorpseFade.Value,
-                Plugin.CorpseEffects == null || Plugin.CorpseEffects.Value,
-                inLevel, Paused(), _playPatched, PrefabIsSafe(), PoolState(),
+                fadeEnabled, corpseEffects, inLevel, paused, _playPatched, prefabSafe, poolFacts.State,
                 renderer != null && !ReferenceEquals(renderer, null), offScene, Coordinator.Active, hazard);
             if (TryNative(plan, native, renderer, scheduleId)) { _started++; return CorpseFadeAttempt.Started; }
             if (!CorpseFadePolicy.ShouldAttempt(plan))
             {
                 var skip = CorpseFadePolicy.SkipReason(plan);
+                if (skip == CorpseFadeSkip.ZeroInstances)
+                {
+                    if (deferTransient) return WaitAtDeadline();
+                    _zeroSkipped++;
+                }
+                // 1.2.26: "the pool is empty" is only transient while we are still willing to ask again. Once the
+                // back-off is open the same fact is a deliberate refusal, so the corpse must not spend a second
+                // and a third preparation attempt on it (that is the 4,401-deferred ladder).
+                if (skip == CorpseFadeSkip.NoFreeInstance && !_backoff.MayAttempt(poolFacts.IsReady))
+                    skip = CorpseFadeSkip.PoolStarved;
+                if (skip == CorpseFadeSkip.PoolStarved) _backedOff++;
                 if (deferTransient && CorpseFadeRetry.IsTransient(skip)) return Defer(CorpseFadePolicy.Reason(skip));
                 LogSkip(skip, hazard, scheduleId);
                 return CorpseFadeAttempt.Finished;
             }
+            Target.BeginAttempt(scheduleId);
             if (!Coordinator.TryStart(Target, renderer, out CorpseFadeOutcome outcome))
             {
                 if (deferTransient && CorpseFadeRetry.IsTransient(outcome)) return Defer(CorpseFadePolicy.Reason(outcome));
                 LogFailure(outcome, scheduleId);
                 return CorpseFadeAttempt.Finished;
             }
+            if (outcome == CorpseFadeOutcome.StartedProbeUnknown)
+            {
+                LogStartedUnknown(scheduleId, renderer);
+                return CorpseFadeAttempt.Finished;
+            }
             _started++;
-            if (outcome == CorpseFadeOutcome.StartedProbeUnknown) LogStartedUnknown(scheduleId, renderer);
-            else LogStarted(scheduleId, renderer);
+            LogStarted(scheduleId, renderer);
             return CorpseFadeAttempt.Started;
         }
         catch (Exception error) { _failed++; Warn(error); return CorpseFadeAttempt.Finished; }
@@ -412,9 +466,16 @@ internal static class CorpseFade
         if (suppressed > 0)
             Plugin.Instance?.Log.LogInfo($"[CORPSE] fade=summary;terminal-suppressed={suppressed};cap={CorpseFadeDiagnostics.MaxTerminalPerLevel};note=more-corpuses-than-the-terminal-allowance-this-level");
         Diagnostics.Reset();
-        if (_started + _deferred + _skipped + _failed > 0)
-            Plugin.Instance?.Log.LogInfo($"[CORPSE] fade=totals;started={_started};deferredAttempts={_deferred};skipped={_skipped};failed={_failed};active={Coordinator.Active};gameReleases={Coordinator.GameReleases};manualReleases={Coordinator.ManualReleases};note=full-counts-not-log-samples");
+        if (_started + _deferred + _skipped + _failed + _backedOff + _deadlineWaits + Coordinator.UnknownStates > 0)
+            Plugin.Instance?.Log.LogInfo($"[CORPSE] fade=totals;started={_started};deferredAttempts={_deferred};skipped={_skipped};failed={_failed};backedOff={_backedOff};zeroAtDeadline={_zeroSkipped};deadlineWaits={_deadlineWaits};active={Coordinator.Active};idleObserved={Coordinator.GameReleases};playUnconfirmed={Coordinator.UnknownStates};manualReleases={Coordinator.ManualReleases};returnUnconfirmed={Coordinator.ReleaseUnconfirmed};arms={Target.ArmsAttempted};initSkinned={Target.SkinnedCalls};initMesh={Target.MeshCalls};armThrew={Target.ArmsThrew};armIncomplete={Target.ArmsIncomplete};{_lastPoolFacts.Describe()};note=full-counts-not-log-samples");
         _started = _deferred = _skipped = _failed = 0;
+        // 1.2.26: the pool is rebuilt with the level, so the observation of the old one is worthless - and a new
+        // level must be allowed to ask again on its very first corpse.
+        _backoff.Reset();
+        _backedOff = 0;
+        _lastPoolFacts = CorpseFadePoolFacts.Missing;
+        _zeroSkipped = _deadlineWaits = 0;
+        Target.ResetCounters();
         Coordinator.ResetCounters();
     }
 
@@ -467,19 +528,44 @@ internal static class CorpseFade
         catch { return false; }
     }
 
-    // Read-only pool observation: "the game never built the pool" and "every instance is in use" are
-    // different diagnoses, and only the second one can change a moment later. Nothing here creates or
-    // initialises a pool, so the fallback stays exactly the shipped instant hide.
-    private static CorpseFadePoolState PoolState()
+    // 1.2.26: monotonic clock for the pooled back-off only. Unscaled on purpose: a paused game still advances it,
+    // so a long pause can neither stretch nor freeze the cooldown, and no native state depends on it.
+    private static float Now()
+    {
+        try { return Time.unscaledTime; } catch { return 0f; }
+    }
+
+    // Read-only pool observation: "the game never built the pool", "every instance is in use" and "the pool is at
+    // its ceiling and cannot grow" are different diagnoses, and only the second one can change a moment later.
+    // Nothing here creates, initialises or grows a pool, so the fallback stays exactly the shipped instant hide.
+    private static CorpseFadePoolFacts PoolFacts()
     {
         try
         {
             ObjectPooler.Pool pool = Decay.pool;
-            if (pool == null) return CorpseFadePoolState.Missing;
-            return pool.freeInstanceCount > 0 ? CorpseFadePoolState.Ready : CorpseFadePoolState.Exhausted;
+            // A pool the game has not built yet. Every number stays "unreadable": a log line must never imply a count
+            // of 0 it did not observe.
+            if (pool == null)
+                return new CorpseFadePoolFacts(CorpseFadePoolState.Missing, -1, -1, -1, -1, false, false);
+            int free = pool.freeInstanceCount, used = pool.usedInstanceCount, count = pool.count;
+            return new CorpseFadePoolFacts(CorpseFadePoolFacts.Classify(free, used, count),
+                free, used, count, pool.m_minCount, pool.dynamic, pool.allowStealing);
         }
-        catch { return CorpseFadePoolState.Missing; }
+        catch { return CorpseFadePoolFacts.Missing; }
     }
+
+    // One line per transition, never per corpse: `state=starved` says we stopped asking (our own choice, with the
+    // real pool shape behind it), `recovered`/`cooldown-expired` say the gate is open again. Bounded by the same
+    // per-level allowance as every other receipt, so a swarm cannot turn this into a log flood.
+    private static void LogBackoff(CorpseFadeBackoffStep step, in CorpseFadePoolFacts facts)
+    {
+        if (step == CorpseFadeBackoffStep.None) return;
+        string state = step == CorpseFadeBackoffStep.Starved ? "starved"
+            : step == CorpseFadeBackoffStep.Recovered ? "recovered" : "cooldown-expired";
+        if (!Diagnostics.AllowLine("backoff:" + state)) return;
+        Plugin.Instance?.Log.LogInfo($"[CORPSE] fade=backoff;state={state};reason={CorpseFadePolicy.Reason(CorpseFadeSkip.PoolStarved)};{facts.Describe()};active={Coordinator.Active};misses={_backoff.Misses};cooldown={CorpseFadeBackoff.CooldownSeconds:0.0};note=pooled-path-not-asked-per-corpse");
+    }
+
 
     private static void LogSkip(CorpseFadeSkip skip, CorpseFadeHazard hazard, int scheduleId)
     {
@@ -501,13 +587,14 @@ internal static class CorpseFade
         if (outcome == CorpseFadeOutcome.PoolUnverifiable) _skipped++;
         else _failed++;
         string reason = CorpseFadePolicy.Reason(outcome);
-        // F2 (1.2.19 review): the pooled path is fail-closed, so "this borrowed instance cannot be proven to be
-        // ours" is a SKIP - it was handed back untouched, nothing was broken. Either way a corpse gets exactly ONE
-        // terminal fade= line (fade=begun | fade=skipped | fade=failed), claimed once per scheduleId (F5).
+        // An unverifiable arm never plays. Release is a separate, independently checked operation.
         if (outcome == CorpseFadeOutcome.PoolUnverifiable)
         {
             if (!Diagnostics.ClaimTerminal(scheduleId)) return;
-            Plugin.Instance?.Log.LogInfo($"[CORPSE] fade=skipped;reason={reason};scheduleId={scheduleId};polls={Coordinator.LastPolls};note=pooled-instance-unverifiable;active={Coordinator.Active}");
+            // 1.2.26: `arm=` names WHICH arm answer produced the fail-closed skip (complete / incomplete-no-copy /
+            // target-mismatch / threw). "We handed it back untouched" and "the native arm stopped halfway" used to
+            // share one line; the second is the one that leaves a half-initialised instance behind.
+            Plugin.Instance?.Log.LogInfo($"[CORPSE] fade=skipped;reason={reason};scheduleId={scheduleId};polls={Coordinator.LastPolls};note=pooled-instance-unverifiable;arm={Target.LastArmDetail};active={Coordinator.Active}");
             return;
         }
         if (Diagnostics.ClaimTerminal(scheduleId))
@@ -522,14 +609,16 @@ internal static class CorpseFade
     private static void LogStarted(int scheduleId, Renderer renderer)
     {
         if (!Diagnostics.ClaimTerminal(scheduleId)) return;
-        Plugin.Instance?.Log.LogInfo($"[CORPSE] fade=begun;seconds={CorpseFadePolicy.FadeSeconds:0.00};renderer={FadeRendererCast.Describe(renderer)};concurrent={Coordinator.Active};scheduleId={scheduleId}");
+        // 1.2.26: `path=` makes "the native dissolve really started" comparable with the corpse-own
+        // `path=native-decay` line and with the deliberate `fade=backoff` receipt - three different facts.
+        Plugin.Instance?.Log.LogInfo($"[CORPSE] fade=begun;path=pooled-arm;seconds={CorpseFadePolicy.FadeSeconds:0.00};renderer={FadeRendererCast.Describe(renderer)};concurrent={Coordinator.Active};scheduleId={scheduleId}");
     }
 
     private static void LogStartedUnknown(int scheduleId, Renderer renderer)
     {
         string reason = CorpseFadePolicy.Reason(CorpseFadeOutcome.StartedProbeUnknown);
         if (!Diagnostics.ClaimTerminal(scheduleId)) return;
-        Plugin.Instance?.Log.LogInfo($"[CORPSE] fade=begun;reason={reason};seconds={CorpseFadePolicy.FadeSeconds:0.00};renderer={FadeRendererCast.Describe(renderer)};concurrent={Coordinator.Active};scheduleId={scheduleId}");
+        Plugin.Instance?.Log.LogInfo($"[CORPSE] fade=held;path=pooled-arm;reason={reason};renderer={FadeRendererCast.Describe(renderer)};active={Coordinator.Active};scheduleId={scheduleId};note=play-unconfirmed");
     }
 
     private static string Short(string text)
@@ -548,6 +637,41 @@ internal static class CorpseFade
     // Thin adapter over the native API; the borrow/release decisions live in CorpseFadeCoordinator.
     private sealed class DecayFadeTarget : ICorpseFadeTarget
     {
+        // 1.2.26: the borrow records WHICH pool object handed the instance out, so the hand-back can prove it is
+        // returning into the same generation (a level change rebuilds the pool). Only one borrow is ever in flight
+        // on this thread - the coordinator releases a failed attempt before it borrows again - so one slot suffices.
+        private object _borrowedHandle;
+        private IntPtr _borrowedPool, _usedNode, _previousCopy;
+        private bool _previousKnown;
+        private Renderer _source;
+        // Attempt identity for the arm diagnostics: the corpse the pooled path is currently working for, and the
+        // detailed answer of its last arm (read by CorpseFade.LogFailure, never by the policy).
+        private int _scheduleId;
+        internal string LastArmDetail = "unset";
+        internal int ArmsAttempted, ArmsThrew, ArmsIncomplete, ArmsBound;
+        internal int SkinnedCalls, MeshCalls;
+
+        internal void BeginAttempt(int scheduleId)
+        {
+            _scheduleId = scheduleId;
+            _borrowedHandle = null;
+            _borrowedPool = _usedNode = _previousCopy = IntPtr.Zero;
+            _source = null;
+            _previousKnown = false;
+            LastArmDetail = "unset";
+        }
+
+        internal void ResetCounters()
+        {
+            SkinnedCalls = MeshCalls = 0;
+            ArmsAttempted = ArmsThrew = ArmsIncomplete = ArmsBound = 0;
+            _borrowedHandle = null;
+            _borrowedPool = _usedNode = _previousCopy = IntPtr.Zero;
+            _source = null;
+            _previousKnown = false;
+            LastArmDetail = "unset";
+        }
+
         // The pool is only ever *read* here. "Missing" and "no free instance" used to collapse into a
         // single null handle, which is why the host log could not tell them apart.
         public CorpseFadeBorrow TryBorrow(out object handle)
@@ -559,6 +683,9 @@ internal static class CorpseFade
             Decay instance = Decay.GetInstance();
             if (instance == null) return CorpseFadeBorrow.NoFreeInstance;   // raced with the game's own borrow
             handle = instance;
+            _borrowedHandle = instance;
+            _borrowedPool = pool.Pointer;
+            _usedNode = pool.m_usedInstances.Find(instance.gameObject)?.Pointer ?? IntPtr.Zero;
             return CorpseFadeBorrow.Ok;
         }
 
@@ -571,12 +698,7 @@ internal static class CorpseFade
             return decay.m_playing ? CorpseFadeState.Playing : CorpseFadeState.Idle;
         }
 
-        // 1.2.20: the borrowed instance IS armed - exactly the way the game arms its own (ES_Dead.DecayDelayed:
-        // GetInstance -> Initialize(renderer, irfs) -> Play). 1.2.18 threw a native NullReferenceException from the
-        // same call, so it is treated as suspect instead of trusted: the renderer is resolved through TryCast, the
-        // IRF list is a real (empty) list rather than null, and the ONLY accepted proof of identity is the read-back
-        // of m_targetRenderer - the very field the native Play refuses to run without. Any exception or any other
-        // renderer is a refusal, and the coordinator hands the instance back exactly once.
+        // Only a normal Initialize followed by a complete, independently observed binding may reach Play.
         public CorpseFadeArm Ready(object handle, object renderer)
         {
             if (handle is not Decay decay || decay == null) return CorpseFadeArm.Refused;
@@ -585,34 +707,114 @@ internal static class CorpseFade
             if (!FadeRendererCast.TryResolve(target, out SkinnedMeshRenderer skinned, out MeshRenderer mesh))
                 return CorpseFadeArm.Refused;
             bool threw = false, bound = false;
+            string overload = skinned != null ? "skinned" : "mesh";
+            // These bounded receipts correlate this managed attempt only; a nearby native frame has no caller ID.
+            int serial = ++ArmSerial;
+            BeginArm(target, overload, serial);
             try
             {
+                _source = target;
+                Renderer previous = decay.m_decayRenderer;
+                _previousCopy = previous == null ? IntPtr.Zero : previous.Pointer;
+                _previousKnown = true;
+                if (!OwnsIdleBorrow(handle)) { EndArm(target, overload, serial, false, false, false, false, false, false); return CorpseFadeArm.Refused; }
                 var irfs = new Il2CppSystem.Collections.Generic.List<IRF.InstancedRenderFeature>();
-                if (skinned != null) decay.Initialize(skinned, irfs);
-                else decay.Initialize(mesh, irfs);
+                if (skinned != null) { SkinnedCalls++; decay.Initialize(skinned, irfs); }
+                else { MeshCalls++; decay.Initialize(mesh, irfs); }
                 Renderer boundTarget = decay.m_targetRenderer;
-                bound = boundTarget != null && boundTarget.Pointer == target.Pointer;
+                bool targetBound = boundTarget != null && boundTarget.Pointer == target.Pointer;
+                // A bound target alone survives partial initialization. Require a distinct live mesh copy.
+                Renderer copy = decay.m_decayRenderer;
+                bool copyPresent = copy != null && copy.Pointer != IntPtr.Zero;
+                bool copyLive = copyPresent && FadeRendererCast.HasLiveCopy(copy);
+                bool playing = decay.m_playing;
+                bound = CorpseFadePolicy.ArmComplete(targetBound, copyLive && copy.gameObject != target.gameObject
+                    && copy.gameObject != decay.gameObject, copyPresent ? copy.Pointer.ToInt64() : 0L,
+                    target.Pointer.ToInt64(), _previousCopy.ToInt64(), playing);
+                EndArm(target, overload, serial, false, targetBound, copyPresent, copyLive, playing, bound);
             }
-            catch (Exception error) { threw = true; Warn(error); }
+            catch (Exception error)
+            {
+                threw = true;
+                Warn(error);
+                EndArm(target, overload, serial, true, false, false, false, false, false);
+            }
             return CorpseFadePolicy.ArmVerdict(threw, bound);
+        }
+
+        // Bounded, attributable arm receipts. `fade=arm;phase=begin` prints for the first few arms of a level (an
+        // operator needs the shape once), `phase=end` prints for those and for EVERY anomalous arm - the real counts
+        // travel in the level totals, so a swarm cannot flood the log.
+        private static int ArmSerial;
+
+        private void BeginArm(Renderer target, string overload, int serial)
+        {
+            if (!Diagnostics.AllowLine("arm-begin")) return;
+            Plugin.Instance?.Log.LogInfo($"[CORPSE] fade=arm;phase=begin;arm={serial};scheduleId={_scheduleId};overload={overload};renderer={Pointer(target)};{PoolFacts().Describe()};note=attempt-context-not-native-caller-proof");
+        }
+
+        private void EndArm(Renderer target, string overload, int serial, bool threw,
+            bool targetBound, bool copyPresent, bool copyLive, bool playing, bool bound)
+        {
+            ArmsAttempted++;
+            if (threw) ArmsThrew++;
+            if (!threw && !bound) ArmsIncomplete++;
+            if (bound) ArmsBound++;
+            LastArmDetail = threw ? "exception" : !targetBound ? "target-mismatch"
+                : !copyPresent ? "incomplete-no-copy" : !copyLive ? "incomplete-no-mesh"
+                : playing ? "still-playing" : !bound ? "copy-not-distinct" : "complete";
+            string note = LastArmDetail;
+            if (!Diagnostics.AllowLine(bound ? "arm-end" : "arm-anomaly")) return;
+            Plugin.Instance?.Log.LogInfo($"[CORPSE] fade=arm;phase=end;arm={serial};scheduleId={_scheduleId};overload={overload};renderer={Pointer(target)};threw={threw};targetBound={targetBound};copy={(copyPresent ? "present" : "missing")};copyLive={copyLive};playing={playing};bound={bound};{PoolFacts().Describe()};arms={ArmsAttempted};incomplete={ArmsIncomplete};note={note}");
+        }
+
+        private static string Pointer(Renderer renderer)
+        {
+            try { return renderer == null ? "none" : "0x" + renderer.Pointer.ToInt64().ToString("X"); }
+            catch (Exception) { return "unreadable"; }
         }
 
         public void Play(object handle, float seconds)
         {
             if (handle is Decay decay) decay.Play(seconds);
         }
-
-
-        public void Cleanup(object handle)
+        public bool OwnsIdleBorrow(object handle)
         {
-            if (handle is Decay decay) decay.Cleanup();
+            if (handle is not Decay decay || decay == null || !ReferenceEquals(handle, _borrowedHandle)) return false;
+            var pool = Decay.pool;
+            var go = decay.gameObject;
+            if (pool == null || pool.Pointer != _borrowedPool || go == null || _usedNode == IntPtr.Zero) return false;
+            var used = pool.m_usedInstances.Find(go);
+            return CorpseFadePolicy.MayReturn(true, true, Probe(handle), used != null && used.Pointer == _usedNode,
+                pool.m_freeInstances.Contains(go));
         }
 
-        public void Return(object handle)
+        public bool Cleanup(object handle)
         {
-            if (handle is not Decay decay) return;
-            ObjectPooler.Pool pool = Decay.pool;
-            pool?.Return(decay.gameObject);
+            var decay = (Decay)handle;
+            Renderer copy = decay.m_decayRenderer;
+            if (copy != null)
+            {
+                Renderer bound = decay.m_targetRenderer;
+                if (_source == null || bound == null || bound.Pointer != _source.Pointer || !_previousKnown
+                    || copy.Pointer == _previousCopy || copy.Pointer == _source.Pointer
+                    || copy.gameObject == _source.gameObject || copy.gameObject == decay.gameObject) return false;
+            }
+            decay.Cleanup();
+            // Do not repool a partially cleaned instance if interop returned without a managed exception.
+            return decay.m_decayRenderer == null;
+        }
+
+        public bool Return(object handle)
+        {
+            var decay = (Decay)handle;
+            var pool = Decay.pool;
+            var go = decay.gameObject;
+            _borrowedHandle = null; // consume before the native call, including its exception path
+            pool.Return(go);
+            var current = Decay.pool;
+            return current != null && current.Pointer == pool.Pointer && !pool.m_usedInstances.Contains(go)
+                && pool.m_freeInstances.Contains(go);
         }
     }
 }

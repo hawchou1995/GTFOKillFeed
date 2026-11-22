@@ -1,5 +1,27 @@
 # 更新日志
 
+## 1.2.27
+
+- 区分游戏淡出池“实例全忙”和“总数为零”。后者不再按 8 秒周期恢复重试；清理截止时若已有空位或尸体已有可用组件，仍可尝试。持续无实例时仍按原时间隐藏，不创建或扩容游戏池。
+- 关末分别统计零实例跳过、等到截止的次数和本模组两种 `Initialize` 重载的调用次数，便于区分实测中的原生异常与本模组行为。
+
+## 1.2.26
+
+- 修复尸爆音效写入 Unity 时误算采样数：只写入 WAV 实际包含的帧数。保留原音效、空间位置、合并播放和失败时的游戏音效回退。
+- 修复尸体回收、复用时短暂进入不兼容的刚体碰撞模式；高速击飞仍使用连续检测。
+- 没有本插件占用的淡出槽、连续两次观察到游戏池空时，暂缓池化尝试 8 秒；一旦读到空闲实例，下具尸体即可重新尝试。保留尸体自身已有的安全淡出和原清理时间，不建池、不扩池、不抢实例。
+- 池化淡出须读回本次目标与新建的有效网格副本。准备失败时，清理和归还前分两次核验所有权，只把已在空闲表中确认的手动归还计为成功。日志把播放、状态未知和停止播放分开记录；历史 `Decay.InitializeInternal` 空引用的调用来源及本版实机效果仍待确认。
+
+## 1.2.25
+
+- **硬直行只显示理论最大阈值，每个分组只取最大值。** `EnemyBar/ShowStaggerLine` 现在每项一个数：`[四肢：40][躯体：50][普通(阈值)：80]`。四肢/躯体取该组**可确认的未毁可破部位**的固定上限 `Dam_EnemyDamageLimb.m_healthMax` 的**最大值**（不再读当前耐久 `m_health`，也不再写成 `当前/上限`；同组上限 40 与 60 **只显示 `60`**，不显示区间、不保留最小值）；普通硬直独立取 `GameData.HealthData.DamageUntilHitreact` 本身，不再读累计值 `m_damBuildToHitreact`、不再做减法。
+- **数值是游戏真实值。** 用最短往返表示（`value.ToString("G")` 并回读校验）：`0.0001` 不会被缩成 0，`39.9999` 也不会被抬成 40，大数值保留真实量级而不再截成固定上限；数值宽度仍由现有布局缩放/夹取。
+- **没有有效项的整项省略，全部为空则整行不画、不占位。** 不再输出 `—`，也不伪造 `0` 或“免疫”：没有可断部位、部位已毁、部位解剖值未知/模组值、阈值为 0/负数/NaN/无穷，都直接不显示该项；三项都没有时血条下方不绘制任何行。换行方案按实际项数计算（1/2/3 行），不会再产生空行；左端仍对齐怪物名称第一个字（名称隐藏时对齐血条左边），窄屏先缩字号再按组换行并夹取。
+- **部位项必须有正向证据。** 只有 `GameData.HealthData.HitreactOnLimbDestruction`（`ES_HitreactType`，本机 interop 已核对：Unspecified=0/None=1/Micro=2/Light=3/Heavy=4/ToDeath=5/InstantRagdollDeath=6）为 **Micro/Light/Heavy** 时才显示四肢/躯体两项；`None`、`Unspecified`、`ToDeath`/`InstantRagdollDeath`、未知/模组值与**开关读取失败**都省略这两项，并打一条有界 `[BAR] stagger=part;shown=no;reason=no-confirmed-limb-hitreact|switch-unreadable;...;note=parts-omitted-not-immune` 回执——**省略不等于免疫**，也不声称该敌人一定没有硬直。`TryForceHitreactOnLimbDestruction` 只核对类型存在，不参与判断。
+- **切怪不串用旧数字。** 缓存行记录它属于哪个敌人（`_staggerTargetId`）：切怪时先清空旧行再按新目标重建，目标丢失后该行立即不绘制，不会在淡出或 0.35 s 刷新间隔里沿用上一个敌人的数值。
+- **未改动**：真正触发硬直的伤害数字绿字判定（仍需要累计值 `m_damBuildToHitreact` 与 `OnTakeDamage` 决策）、弱点/结沫标签、血条本体、尸体反馈、击杀计数与网络。
+- **门禁**：`scripts/Test-EnemyBarStaggerIl.ps1` 断言 `ReadStagger` **不读** `m_damBuildToHitreact` 与 `m_health`、只经 `BarPolicy.IsUsableThreshold`/`LimbBreakIsHitreact`，分组只保留单个 `Max`（`MaxMin/MaxMax/_min` 必须不存在），`ThresholdValue` 不截断不取整，`DrawStaggerRow` 只在 `_haveTarget` 时绘制，`Tick` 记录 `_staggerTargetId` 并在切怪时清空旧行，并逐项核对 interop 的 `ES_HitreactType` 与 `GameData.HealthData` 成员；Smoke 覆盖正常/仅普通/仅部位/混合组/未知部位/非有限值/无有效项/开关 None·Unspecified·死亡类·读失败/极小极大值/切怪/无空行。本版程序集版本为 `1.2.25.0`。
+
 ## 1.2.24
 
 - **修复尸体淡出可能导致整个游戏画面变黑的问题。** 开启 `Corpse/FadeEffect` 后，KillFeed 会避开可能破坏阴影绘制的尸体部件和已有的淡出副本；同一具尸体有安全部件就继续淡出，没有则按原清理时间隐藏。不需要关闭淡出，也不改动全局阴影。

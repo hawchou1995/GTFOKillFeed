@@ -364,11 +364,35 @@ internal static class BarPolicy
         blue = StaggerTextBlue;
     }
 
-    // Two different questions, kept apart on purpose:
-    //   * limb destruction - the damage that still breaks ONE destructible limb, read from the live limb
-    //     (m_health) for the limbs the game itself treats as destroyable; a REMAINING amount, per limb;
-    //   * normal hitreact  - GameData.HealthData.DamageUntilHitreact minus the live accumulator
-    //     (Dam_EnemyDamageBase.m_damBuildToHitreact). This is the game's own formula, proven on the shipped binary:
+    // ES_HitreactType, pinned against the installed Modules-ASM interop (scripts/Test-EnemyBarStaggerIl.ps1).
+    internal const int HitreactUnspecified = 0;
+    internal const int HitreactNone = 1;
+    internal const int HitreactMicro = 2;
+    internal const int HitreactLight = 3;
+    internal const int HitreactHeavy = 4;
+    internal const int HitreactToDeath = 5;
+    internal const int HitreactInstantRagdollDeath = 6;
+
+    // 1.2.25: GameData.HealthData.HitreactOnLimbDestruction is the game's own switch for "breaking THIS enemy's limb
+    // plays this hitreact". The part items need POSITIVE evidence, so only an authored stagger reaction counts:
+    // Micro (2), Light (3) and Heavy (4). Everything else omits the two part items rather than claiming a threshold the
+    // game may never use:
+    //   * None (1)                - the switch is provably OFF (a limb break plays no hitreact);
+    //   * Unspecified (0)         - unauthored; we cannot prove which reaction, if any, is played. This is NOT a claim
+    //                               of immunity: the item is simply omitted;
+    //   * ToDeath (5) / InstantRagdollDeath (6) - the reaction is the death itself, not a stagger threshold;
+    //   * any unknown/mod value, and an unreadable switch, are equally unproven and equally omitted.
+    internal static bool LimbBreakIsHitreact(int hitreactOnLimbDestruction)
+        => hitreactOnLimbDestruction == HitreactMicro
+            || hitreactOnLimbDestruction == HitreactLight
+            || hitreactOnLimbDestruction == HitreactHeavy;
+
+    // 1.2.25: the row shows ONE number per item - the theoretical maximum threshold - and nothing else.
+    //   * limbs/torso - the fixed capacity the game gave each live, breakable part (Dam_EnemyDamageLimb.m_healthMax).
+    //     The CURRENT durability (m_health) is deliberately NOT read: it is a remaining amount, not a threshold, and a
+    //     "15/40" cell made a half-broken limb look like a different maximum. A broken part is skipped entirely.
+    //   * normal      - GameData.HealthData.DamageUntilHitreact itself, read independently of the parts. It is the
+    //     enemy's own ABSOLUTE damage budget, proven on the shipped binary:
     //       Dam_EnemyDamageBase::ProcessReceivedDamage  RVA 0x137E570 (Il2CppDumper script.json)
     //         0x137E639  mulss  xmm0, xmm10                ; damage * multiplier
     //         0x137E63E  addss  xmm0, [rbx+0x150]          ; + m_damBuildToHitreact   (dump.cs: 0x150)
@@ -378,69 +402,47 @@ internal static class BarPolicy
     //         0x137E684  comiss xmm0, [rax+0x14]          ; accumulator vs DamageUntilHitreact (HealthData 0x14)
     //         0x137E688  jae    0x137E693                 ; trigger when accumulator >= threshold
     //         0x137E693  mov    [rbx+0x150], edi           ; edi == 0 (xor edi,edi @0x137E5CB): accumulator reset
-    //     So the data field is an ABSOLUTE damage budget in the same units as incoming damage - no ratio, no
-    //     HealthMax factor, no weapon-panel conversion - and the damage still needed is
-    //     max(0, threshold - m_damBuildToHitreact). The row therefore shows a computed REMAINING value, never a
-    //     guessed magnitude: only a readable, finite, strictly positive threshold plus a finite accumulator is
-    //     shown; anything else is the explicit no-data dash (never "immune", never a fabricated 0, never the
-    //     C-Foam sentinel).
+    //     The row therefore prints the budget, never budget-minus-accumulator: no ratio and no HealthMax factor. The
+    //     running accumulator still exists and is still required, but only by the real-hit green digits (1.2.24),
+    //     which is a different question and keeps its own read path.
+    // A non-finite or non-positive value is no value at all, so the item is omitted (never a dash, never a 0).
+    // 1.2.25: one group carries exactly ONE number - the maximum of the confirmable capacities. A group whose parts have
+    // 40 and 60 shows 60: the player asked for the theoretical maximum, so no range and no minimum are kept at all.
     internal readonly struct StaggerGroupValues
     {
         internal readonly bool HasValue;
-        internal readonly bool CapacityKnown;
-        internal readonly float CurrentMin;
-        internal readonly float CurrentMax;
-        internal readonly float CapacityMin;
-        internal readonly float CapacityMax;
+        internal readonly float Max;
 
-        internal StaggerGroupValues(bool hasValue, bool capacityKnown, float currentMin, float currentMax,
-            float capacityMin, float capacityMax)
+        internal StaggerGroupValues(bool hasValue, float max)
         {
             HasValue = hasValue;
-            CapacityKnown = capacityKnown;
-            CurrentMin = currentMin;
-            CurrentMax = currentMax;
-            CapacityMin = capacityMin;
-            CapacityMax = capacityMax;
+            Max = max;
         }
 
-        internal static StaggerGroupValues None => new StaggerGroupValues(false, false, 0f, 0f, 0f, 0f);
+        internal static StaggerGroupValues None => new StaggerGroupValues(false, 0f);
     }
 
-    // Mutable builder used by the live read path. It only accepts a readable, strictly positive CURRENT durability;
-    // the fixed capacity (the game's own m_healthMax) is optional and is never substituted for the current value.
+    // Mutable builder used by the live read path. It accepts ONLY a readable, strictly positive fixed capacity, so a
+    // group can never be built out of a current durability, a guess or a 0.
     internal struct StaggerGroupBuilder
     {
         private bool _has;
-        private bool _capacityKnown;
-        private float _currentMin, _currentMax, _capacityMin, _capacityMax;
+        private float _max;
 
-        internal void Add(float current, float capacity)
+        internal void Add(float capacity)
         {
-            if (!KillPolicy.IsFinite(current) || current <= 0f) return;
-            bool capReadable = KillPolicy.IsFinite(capacity) && capacity > 0f;
+            if (!KillPolicy.IsFinite(capacity) || capacity <= 0f) return;
             if (!_has)
             {
                 _has = true;
-                _capacityKnown = capReadable;
-                _currentMin = current;
-                _currentMax = current;
-                _capacityMin = capReadable ? capacity : 0f;
-                _capacityMax = capReadable ? capacity : 0f;
+                _max = capacity;
                 return;
             }
-            if (current < _currentMin) _currentMin = current;
-            if (current > _currentMax) _currentMax = current;
-            if (!capReadable) { _capacityKnown = false; return; }
-            if (!_capacityKnown) return;
-            if (capacity < _capacityMin) _capacityMin = capacity;
-            if (capacity > _capacityMax) _capacityMax = capacity;
+            if (capacity > _max) _max = capacity;
         }
 
         internal StaggerGroupValues Build()
-            => _has
-                ? new StaggerGroupValues(true, _capacityKnown, _currentMin, _currentMax, _capacityMin, _capacityMax)
-                : StaggerGroupValues.None;
+            => _has ? new StaggerGroupValues(true, _max) : StaggerGroupValues.None;
     }
 
     internal readonly struct StaggerValues
@@ -448,14 +450,14 @@ internal static class BarPolicy
         internal readonly StaggerGroupValues Limbs;
         internal readonly StaggerGroupValues Torso;
         internal readonly bool HasNormal;
-        internal readonly float NormalRemaining;
+        internal readonly float NormalThreshold;
 
-        internal StaggerValues(StaggerGroupValues limbs, StaggerGroupValues torso, bool hasNormal, float normalRemaining)
+        internal StaggerValues(StaggerGroupValues limbs, StaggerGroupValues torso, bool hasNormal, float normalThreshold)
         {
             Limbs = limbs;
             Torso = torso;
             HasNormal = hasNormal;
-            NormalRemaining = normalRemaining;
+            NormalThreshold = normalThreshold;
         }
 
         internal static StaggerValues None => new StaggerValues(StaggerGroupValues.None, StaggerGroupValues.None, false, 0f);
@@ -507,70 +509,51 @@ internal static class BarPolicy
         }
     }
 
-    internal const string NoStaggerValue = "—";
-
-    // Damage still required for ONE part, rounded UP: a part with 0.4 HP left needs one more point of damage,
-    // never "0". Only a finite, strictly positive value is rendered; everything else is the no-data dash.
-    internal static string RequiredDamage(float value)
+    // A theoretical threshold is rendered as the value the game really stores: the shortest string that round-trips to
+    // the SAME float ("G" on .NET Core 3.0+ / net6.0 is the shortest round-trippable form). Nothing is rounded up,
+    // clamped or otherwise turned into a different number: 40 stays "40", 12.5 stays "12.5", 0.0001 stays "0.0001" and
+    // a very large capacity keeps its real magnitude instead of being pinned to a printable ceiling. A non-finite or
+    // non-positive value has no text at all, so the item that would have shown it is omitted.
+    internal static string ThresholdValue(float value)
     {
-        if (!KillPolicy.IsFinite(value) || value <= 0f) return NoStaggerValue;
-        double rounded = Math.Ceiling(value);
-        return rounded >= 9999999d ? "9999999" : rounded.ToString(CultureInfo.InvariantCulture);
+        if (!KillPolicy.IsFinite(value) || value <= 0f) return string.Empty;
+        string text = value.ToString("G", CultureInfo.InvariantCulture);
+        if (text.Length == 0) return string.Empty;
+        // A round-trip formatter never needs this, but the invariant must hold: never print a different number.
+        if (!float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out float back) || back != value) return string.Empty;
+        return text;
     }
 
-    // The game's own normal-hitreact formula: remaining = max(0, threshold - accumulator). Both inputs must be
-    // readable and finite, and the threshold must be strictly positive; a spent budget is a real 0 (the next hit
-    // triggers the hitreact), which is different from "no data".
-    internal static bool StaggerRemaining(float threshold, float accumulated, out float remaining)
-    {
-        remaining = 0f;
-        if (!KillPolicy.IsFinite(threshold) || threshold <= 0f) return false;
-        if (!KillPolicy.IsFinite(accumulated) || accumulated < 0f) return false;
-        float left = threshold - accumulated;
-        remaining = left > 0f ? left : 0f;
-        return true;
-    }
+    // A threshold is usable only when it is a finite, strictly positive number: a 0, a NaN or an Infinity is no
+    // threshold, so the item is omitted rather than printed as "0" or as an invented immunity.
+    internal static bool IsUsableThreshold(float value)
+        => KillPolicy.IsFinite(value) && value > 0f;
 
-    // A live damage amount, never ceiling-rounded: up to three decimals with trailing zeros trimmed, so 0.5 stays
-    // 0.5 and 77.25 stays 77.25. No multiplier, no unit conversion.
-    internal static string DamageAmount(float value)
-    {
-        if (!KillPolicy.IsFinite(value) || value < 0f) return NoStaggerValue;
-        double rounded = Math.Round((double)value, 3, MidpointRounding.AwayFromZero);
-        if (rounded >= 9999999d) return "9999999";
-        string text = rounded.ToString("0.###", CultureInfo.InvariantCulture);
-        return text == "-0" ? "0" : text;
-    }
-
-    private static string DamageSpan(float min, float max)
-    {
-        if (!KillPolicy.IsFinite(min) || !KillPolicy.IsFinite(max)) return NoStaggerValue;
-        if (Math.Abs(max - min) < 0.01f) return RequiredDamage(min);
-        return RequiredDamage(min) + "-" + RequiredDamage(max);
-    }
-
-    // current/capacity is deliberate: the CURRENT durability is the damage the next break still needs, while the
-    // CAPACITY is the fixed maximum the game gave that part. Showing both means 15 (current) and 40 (capacity)
-    // can never be mistaken for one another. A group with no live part is the explicit dash; an unreadable
-    // capacity keeps the current value and dashes only the capacity side.
+    // One value per group, and it is the THEORETICAL MAXIMUM only: the largest confirmable capacity of that group.
+    // Capacities of 40 and 60 inside one group print 60 - no range, no minimum. A group with no confirmable part is the
+    // empty string, never a dash.
     internal static string GroupValue(StaggerGroupValues group)
-    {
-        if (!group.HasValue) return NoStaggerValue;
-        string current = DamageSpan(group.CurrentMin, group.CurrentMax);
-        string capacity = group.CapacityKnown ? DamageSpan(group.CapacityMin, group.CapacityMax) : NoStaggerValue;
-        return current + "/" + capacity;
-    }
+        => group.HasValue ? ThresholdValue(group.Max) : string.Empty;
 
+    internal const int MaxStaggerTokens = 3;
+
+    // One token per confirmable item, in the fixed order limbs / torso / normal. An item with no confirmable value is
+    // the EMPTY string: the row omits it entirely (no dash, no 0) and a row with no item is not drawn at all.
     internal static void StaggerTokens(StaggerValues values, string language, out string limbs, out string torso, out string normal)
     {
         bool chinese = KillPolicy.IsChinese(language);
         string limbValue = GroupValue(values.Limbs);
         string torsoValue = GroupValue(values.Torso);
-        string normalValue = values.HasNormal ? DamageAmount(values.NormalRemaining) : NoStaggerValue;
-        limbs = chinese ? "[四肢：" + limbValue + "]" : "[Limb " + limbValue + "]";
-        torso = chinese ? "[躯体：" + torsoValue + "]" : "[Torso " + torsoValue + "]";
-        normal = chinese ? "[普通(剩余)：" + normalValue + "]" : "[Hitreact(left) " + normalValue + "]";
+        string normalValue = values.HasNormal ? ThresholdValue(values.NormalThreshold) : string.Empty;
+        limbs = limbValue.Length == 0 ? string.Empty : (chinese ? "[四肢：" + limbValue + "]" : "[Limb " + limbValue + "]");
+        torso = torsoValue.Length == 0 ? string.Empty : (chinese ? "[躯体：" + torsoValue + "]" : "[Torso " + torsoValue + "]");
+        normal = normalValue.Length == 0 ? string.Empty
+            : (chinese ? "[普通(阈值)：" + normalValue + "]" : "[Hitreact(max) " + normalValue + "]");
     }
+
+    // How many items the row really carries: 0 means "draw nothing and occupy nothing".
+    internal static int StaggerTokenCount(StaggerValues values)
+        => (values.Limbs.HasValue ? 1 : 0) + (values.Torso.HasValue ? 1 : 0) + (values.HasNormal ? 1 : 0);
 
     internal static string StaggerLine(StaggerValues values, string language)
     {
@@ -626,16 +609,20 @@ internal static class BarPolicy
         return Math.Max(0f, screenWidth - margin - start);
     }
 
-    // One line when the whole row fits, two when limbs+torso and the normal slot fit separately, otherwise three.
-    // A row is never dropped merely because it is wide: it is scaled first and wrapped here, so no value silently
+    // One line when the whole row fits; two when the head group and every single token fit separately; otherwise one
+    // token per line. The plan is COUNT-AWARE (1.2.25): a row that lost an item must never produce an empty line, and
+    // a row is never dropped merely because it is wide - it is scaled first and wrapped here, so no value silently
     // disappears on a narrow screen.
-    internal static int StaggerRows(float available, float fullWidth, float limbsAndTorsoWidth, float widestTokenWidth)
+    internal static int StaggerRows(float available, float fullWidth, float firstLineWidth, float widestTokenWidth, int tokens)
     {
-        if (!KillPolicy.IsFinite(available) || available <= 0f) return 3;
+        int count = tokens < 0 ? 0 : tokens > MaxStaggerTokens ? MaxStaggerTokens : tokens;
+        if (count <= 1) return count;
+        if (!KillPolicy.IsFinite(available) || available <= 0f) return count;
         if (KillPolicy.IsFinite(fullWidth) && fullWidth <= available) return 1;
-        if (KillPolicy.IsFinite(limbsAndTorsoWidth) && limbsAndTorsoWidth <= available &&
+        if (count == 2) return 2;
+        if (KillPolicy.IsFinite(firstLineWidth) && firstLineWidth <= available &&
             KillPolicy.IsFinite(widestTokenWidth) && widestTokenWidth <= available) return 2;
-        return 3;
+        return count;
     }
 
     // Left anchor first, then clamp inside the screen margins. It never centres the row: 960 stays 960 on a 1920

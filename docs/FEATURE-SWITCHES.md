@@ -78,7 +78,7 @@
 | 名称 / 数值 / 弱点标签 | `EnemyBar/ShowName`、`EnemyBar/ShowNumbers`、`EnemyBar/ShowWeakspotPart` | true | `EnemyBar/Enabled` | 只停对应文字 |
 | 硬直行 | `EnemyBar/ShowStaggerLine` | true | `EnemyBar/Enabled` | 只隐藏硬直行，不影响名称、弱点、结沫标签或硬直绿字 |
 
-浅绿行按四肢、躯体分别显示可断部位的当前耐久与上限；普通硬直显示还差多少伤害才触发。无对应部位或数据不可读时显示 `—`，不填 0，也不把普通硬直值冒充部位耐久。隐藏名称时改为与血条左边对齐。
+浅绿行分别显示四肢、躯体和普通硬直的理论最大阈值，不显示剩余值。部位只计尚未破坏、可破坏且已确认断肢会触发 Micro、Light 或 Heavy 硬直的部位；同组只取最大值。普通硬直只读 `Health.DamageUntilHitreact`。缺少有效值的项不显示，不写 `—`、0 或“免疫”。隐藏名称时与血条左边对齐。
 
 ## 6. 倒地队友标记
 
