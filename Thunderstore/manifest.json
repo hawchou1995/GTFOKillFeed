@@ -1,8 +1,8 @@
 {
   "name": "KillFeed",
-  "version_number": "1.2.34",
+  "version_number": "1.2.35",
   "website_url": "https://qingju.me",
-  "description": "GTFO 本地击杀卡片、伤害数字与尸体反馈。1.2.34 池满时改由游戏自己的速溶接管尸体。联机敌人血条依赖 DamageSync。" ,
+  "description": "GTFO 本地击杀卡片、伤害数字与尸体反馈。1.2.35 修复池化复用后击杀计数不再增长。联机敌人血条依赖 DamageSync。" ,
   "dependencies": [
     "BepInEx-BepInExPack_GTFO-3.2.3",
     "randomuserhi-DamageSync-0.0.7"

@@ -82,6 +82,13 @@ internal static class KillCounterTests
         int preview = tracker.IndexOf("internal static void AddPreview", StringComparison.Ordinal);
         check(preview > add && !tracker.Substring(preview).Contains("Counters.Add("), "F9 preview cannot change real kill totals");
         check(tracker.Contains("Counters.Reset(); KillCounterHud.Reset();"), "level-reset clears counter and native anchor");
+        check(tracker.Contains("internal static void Despawned(EnemyAgent agent)")
+            && tracker.Contains("KillLedger.IdentityForRelease(damage, remembered)")
+            && tracker.Contains("KillLedger.ShouldReleaseIdentity(identity,")
+            && tracker.Contains("Ledger.Forget(identity);")
+            && tracker.Contains("_identityByAgent[agent.Pointer.ToInt64()] = identity;")
+            && tracker.Contains("KillTracker.Despawned(__instance);"),
+            "a pooled identity is released on despawn even when Damage is already gone, so a reused enemy can be credited again (1.2.35 counter freeze)");
         string hud = File.ReadAllText(Path.Combine(root.FullName, "KillCounterHud.cs"));
         check(hud.Contains("m_healthWidth") && hud.Contains("m_healthStartPos") && hud.Contains("m_cellUICanvas")
             && hud.Contains("KillCounterAnchorPolicy.ManualRefusal(") && !hud.Contains("Camera.main") && !hud.Contains("FindObjectsOfType"),

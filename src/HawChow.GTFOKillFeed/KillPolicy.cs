@@ -229,6 +229,14 @@ internal sealed class KillLedger
     internal void Reset() => _credited.Clear();
     internal void Forget(long enemyIdentity) => _credited.Remove(enemyIdentity);
     internal int Count => _credited.Count;
+
+    // 1.2.35: a despawn can only release the ledger entry it can still name - the live damage pointer, or the one
+    // recorded when this life was credited. 0 means nothing to release.
+    internal static long IdentityForRelease(long damagePointer, long rememberedPointer)
+        => damagePointer != 0 ? damagePointer : rememberedPointer;
+    // Never release an identity whose own settlement is still on the stack: its finalizer would credit it again.
+    internal static bool ShouldReleaseIdentity(long identity, long activeRootPointer)
+        => identity != 0 && identity != activeRootPointer;
 }
 
 internal sealed class KillCard

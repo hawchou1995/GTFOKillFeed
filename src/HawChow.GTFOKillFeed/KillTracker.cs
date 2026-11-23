@@ -73,6 +73,11 @@ internal static class KillTracker
     private const int FeedbackLines = 12;
     private static int _diagnosticBudget = FeedbackLines;
     private static bool _diagnosticBudgetNoted;
+    // 1.2.35: the identity this life was credited under, keyed by the ENEMY pointer, so a despawn whose Damage is
+    // already gone can still release the ledger entry. Bounded by the live enemy count.
+    private static readonly System.Collections.Generic.Dictionary<long, long> _identityByAgent = new();
+    // Its own receipts must not spend the 12-line feedback allowance that explains damage routing.
+    private static readonly RepeatedLogBudget LedgerLogBudget = new();
 
     // 1.2.24: the damage root of the settlement this thread is inside right now (null outside one). The stagger receipt
     // hook uses it to prove that OnTakeDamage was called from THIS settlement, on THIS thread, for THIS enemy.
@@ -84,7 +89,7 @@ internal static class KillTracker
             Plugin.Instance?.Log.LogInfo($"[KILLFEED] diagnostics=summary;seen={KillLogBudget.Seen};printed={KillLogBudget.Printed};suppressed={KillLogBudget.Suppressed};policy=first-3-and-every-100-per-kind");
         KillLogBudget.Reset();
         Counters.Reset(); KillCounterHud.Reset();
-        Ledger.Reset(); Cards.Clear(); Bursts.Clear(); _active = null; _originScope = null;
+        Ledger.Reset(); _identityByAgent.Clear(); LedgerLogBudget.Reset(); Cards.Clear(); Bursts.Clear(); _active = null; _originScope = null;
         // 1.2.19: the feedback allowance is per LEVEL too (12 lines, then one exhaustion receipt), not per process.
         _diagnosticBudget = FeedbackLines;
         _diagnosticBudgetNoted = false;
@@ -96,6 +101,41 @@ internal static class KillTracker
         if (enemy == null) return;
         Ledger.Forget(enemy.Pointer.ToInt64());
         Bursts.Remove(enemy.Pointer.ToInt64());
+    }
+    // 1.2.35 (Survival: counter froze at 6/2/0): the credit ledger is keyed by the DAMAGE component
+    // pointer, and a pooled enemy hands the same pointer out again. Setup alone is not enough to clear it -
+    // that prefix can run before Damage exists - so the despawn is the other half of the lifecycle. Without
+    // this, every later kill on a reused identity is silently refused as "already credited".
+    internal static void Despawned(EnemyAgent agent)
+    {
+        if (agent == null) return;
+        try
+        {
+            // Review 1.2.35: Damage may already be cleared here, so fall back to the identity recorded when this
+            // life was credited. Without that fallback the whole fix would be a silent no-op.
+            long damage = 0;
+            try { if (agent.Damage != null) damage = agent.Damage.Pointer.ToInt64(); } catch { }
+            long agentKey = agent.Pointer.ToInt64();
+            _identityByAgent.TryGetValue(agentKey, out long remembered);
+            _identityByAgent.Remove(agentKey);
+            long identity = KillLedger.IdentityForRelease(damage, remembered);
+            if (identity == 0)
+            {
+                if (LedgerLogBudget.TryLog("despawn-identity-unknown"))
+                    Plugin.Instance?.Log.LogInfo("[KILLFEED] identity=release-skipped;reason=no-damage-or-remembered-identity;note=ledger-entry-kept");
+                return;
+            }
+            // Review 1.2.35: never clear an identity that still has a settlement on the stack. Despawn during the
+            // killing call would otherwise let the outer finalizer credit the same death twice.
+            if (!KillLedger.ShouldReleaseIdentity(identity, ActiveRoot?.EnemyPointer.ToInt64() ?? 0))
+            {
+                if (LedgerLogBudget.TryLog("despawn-identity-in-flight"))
+                    Plugin.Instance?.Log.LogInfo($"[KILLFEED] identity=release-deferred;identity=0x{identity:X};reason=settlement-in-flight");
+                return;
+            }
+            Ledger.Forget(identity);
+        }
+        catch (Exception error) { Note("despawn ledger clear skipped: " + error.GetType().Name); }
     }
     // ---- 1.2.19 damage origin: the enclosing-call proof and its scope ------------------------------------------
     // Fire and push are not damage roots of their own here: the game calls ProcessReceivedDamage from inside them, and
@@ -301,9 +341,19 @@ internal static class KillTracker
         if (root.EnemyPointer != enemy.Pointer || !root.LocalSource) return;
         RecordHit(enemy, root);
         KillDecision decision = KillPolicy.ClassifyLethalHit(root.LocalSource, root.HealthBefore, enemy.Health, root.LimbObserved, root.Weakspot);
-        if (!decision.Credited || root.Credited || !Ledger.TryCredit(root.EnemyPointer.ToInt64())) return;
+        if (!decision.Credited || root.Credited) return;
+        long identity = root.EnemyPointer.ToInt64();
+        if (!Ledger.TryCredit(identity))
+        {
+            // 1.2.35: a refused repeat is the one gate that can silently freeze the counter, so name it once
+            // per bounded budget instead of disappearing (Note spends the 12-per-level feedback allowance).
+            if (LedgerLogBudget.TryLog("credit-skipped"))
+                Plugin.Instance?.Log.LogInfo($"[KILLFEED] credit skipped: identity 0x{identity:X} already credited this life");
+            return;
+        }
         root.Credited = true;
         EnemyAgent agent = enemy.Owner;
+        try { if (agent != null && agent.Damage != null) _identityByAgent[agent.Pointer.ToInt64()] = identity; } catch { }
         // ONE presentation per credited local kill. The tier (live health lines), the flight identity (the
         // enemy's own behavior data) and the kind (the killing limb) are resolved here and then reused by
         // the kill cue, the card and, next phase, the head HUD - nothing re-derives them per frame.
@@ -348,7 +398,15 @@ internal static class KillTracker
     }
     internal static void CompleteFromAgent(EnemyAgent agent)
     {
-        if (agent?.Damage != null && _active?.Root?.EnemyPointer == agent.Damage.Pointer) Complete(agent.Damage, _active);
+        if (agent?.Damage == null) return;
+        if (_active?.Root == null)
+        {
+            // Bounded: a co-op death that is not ours is normal, so name it without spending the routing budget.
+            if (LedgerLogBudget.TryLog("completion-without-settlement"))
+                Plugin.Instance?.Log.LogInfo("[KILLFEED] kill=unsettled;reason=no-active-damage-settlement;note=death-hook-outside-our-settlement");
+            return;
+        }
+        if (_active.Root.EnemyPointer == agent.Damage.Pointer) Complete(agent.Damage, _active);
     }
     internal static void EnemyDied(EnemyAgent agent)
     {
@@ -625,5 +683,5 @@ internal static class KillFeedStatePatch
 [HarmonyPatch(typeof(EnemyAgent), "OnDeSpawn")]
 internal static class EnemyDespawnPatch
 {
-    [HarmonyPrefix] private static void Prefix(EnemyAgent __instance) => KillTracker.GuardAction(() => { KillIconOccluders.Unregister(__instance); CorpseFeedback.Restore(__instance, "enemy-despawn"); });
+    [HarmonyPrefix] private static void Prefix(EnemyAgent __instance) => KillTracker.GuardAction(() => { KillIconOccluders.Unregister(__instance); CorpseFeedback.Restore(__instance, "enemy-despawn"); KillTracker.Despawned(__instance); });
 }
