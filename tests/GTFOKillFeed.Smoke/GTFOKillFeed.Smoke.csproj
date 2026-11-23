@@ -7,43 +7,43 @@
     <Nullable>disable</Nullable>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\KillPolicy.cs" Link="KillPolicy.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\FeedbackPolicy.cs" Link="FeedbackPolicy.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\EnemyNames.cs" Link="EnemyNames.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\BarPolicy.cs" Link="BarPolicy.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\StaggerHitPolicy.cs" Link="StaggerHitPolicy.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\DamageNumberPaint.cs" Link="DamageNumberPaint.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\ConfigHotReloadGate.cs" Link="ConfigHotReloadGate.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\ShotgunDamageNumberBatch.cs" Link="ShotgunDamageNumberBatch.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\GlueGunWield.cs" Link="GlueGunWield.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\TeammateMarkPolicy.cs" Link="TeammateMarkPolicy.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\AssetReloadPolicy.cs" Link="AssetReloadPolicy.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\EmpBridge.cs" Link="EmpBridge.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\IconPipeline.cs" Link="IconPipeline.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\CardPresentation.cs" Link="CardPresentation.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\CorpseFadePolicy.cs" Link="CorpseFadePolicy.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\CorpseFadeRetry.cs" Link="CorpseFadeRetry.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\KillCounterPolicy.cs" Link="KillCounterPolicy.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\KillCounterAnchorPolicy.cs" Link="KillCounterAnchorPolicy.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\HitSoundPolicy.cs" Link="HitSoundPolicy.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\DamageFxPolicy.cs" Link="DamageFxPolicy.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\FocusOutlinePolicy.cs" Link="FocusOutlinePolicy.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\HitMarkerPolicy.cs" Link="HitMarkerPolicy.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\KillIconPolicy.cs" Link="KillIconPolicy.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\KillIconQueue.cs" Link="KillIconQueue.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\CorpseSwitches.cs" Link="CorpseSwitches.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\KillViewPolicy.cs" Link="KillViewPolicy.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\KillViewConfigApply.cs" Link="KillViewConfigApply.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\CfgPresence.cs" Link="CfgPresence.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\SoundSettings.cs" Link="SoundSettings.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\SoundConfigPlan.cs" Link="SoundConfigPlan.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\KillOccluderRecovery.cs" Link="KillOccluderRecovery.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\HeadBoundsCache.cs" Link="HeadBoundsCache.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\HitMarkerScopes.cs" Link="HitMarkerScopes.cs" />
-    <EmbeddedResource Include="..\..\src\KillFeed.EnemyNames.defaults.json" LogicalName="KillFeed.EnemyNames.defaults.json" />
+    <Compile Include="..\..\KillPolicy.cs" Link="KillPolicy.cs" />
+    <Compile Include="..\..\FeedbackPolicy.cs" Link="FeedbackPolicy.cs" />
+    <Compile Include="..\..\EnemyNames.cs" Link="EnemyNames.cs" />
+    <Compile Include="..\..\BarPolicy.cs" Link="BarPolicy.cs" />
+    <Compile Include="..\..\ConfigHotReloadGate.cs" Link="ConfigHotReloadGate.cs" />
+    <Compile Include="..\..\ShotgunDamageNumberBatch.cs" Link="ShotgunDamageNumberBatch.cs" />
+    <Compile Include="..\..\GlueGunWield.cs" Link="GlueGunWield.cs" />
+    <Compile Include="..\..\TeammateMarkPolicy.cs" Link="TeammateMarkPolicy.cs" />
+    <Compile Include="..\..\AssetReloadPolicy.cs" Link="AssetReloadPolicy.cs" />
+    <Compile Include="..\..\EmpBridge.cs" Link="EmpBridge.cs" />
+    <Compile Include="..\..\StaggerHitPolicy.cs" Link="StaggerHitPolicy.cs" />
+    <Compile Include="..\..\DamageNumberPaint.cs" Link="DamageNumberPaint.cs" />
+    <Compile Include="..\..\IconPipeline.cs" Link="IconPipeline.cs" />
+    <Compile Include="..\..\CardPresentation.cs" Link="CardPresentation.cs" />
+    <Compile Include="..\..\CorpseFadePolicy.cs" Link="CorpseFadePolicy.cs" />
+    <Compile Include="..\..\CorpseFadeRetry.cs" Link="CorpseFadeRetry.cs" />
+    <Compile Include="..\..\KillCounterPolicy.cs" Link="KillCounterPolicy.cs" />
+    <Compile Include="..\..\KillCounterAnchorPolicy.cs" Link="KillCounterAnchorPolicy.cs" />
+    <Compile Include="..\..\HitSoundPolicy.cs" Link="HitSoundPolicy.cs" />
+    <Compile Include="..\..\DamageFxPolicy.cs" Link="DamageFxPolicy.cs" />
+    <Compile Include="..\..\FocusOutlinePolicy.cs" Link="FocusOutlinePolicy.cs" />
+    <Compile Include="..\..\HitMarkerPolicy.cs" Link="HitMarkerPolicy.cs" />
+    <Compile Include="..\..\KillIconPolicy.cs" Link="KillIconPolicy.cs" />
+    <Compile Include="..\..\KillIconQueue.cs" Link="KillIconQueue.cs" />
+    <Compile Include="..\..\CorpseSwitches.cs" Link="CorpseSwitches.cs" />
+    <Compile Include="..\..\KillViewPolicy.cs" Link="KillViewPolicy.cs" />
+    <Compile Include="..\..\KillViewConfigApply.cs" Link="KillViewConfigApply.cs" />
+    <Compile Include="..\..\CfgPresence.cs" Link="CfgPresence.cs" />
+    <Compile Include="..\..\SoundSettings.cs" Link="SoundSettings.cs" />
+    <Compile Include="..\..\SoundConfigPlan.cs" Link="SoundConfigPlan.cs" />
+    <Compile Include="..\..\KillOccluderRecovery.cs" Link="KillOccluderRecovery.cs" />
+    <Compile Include="..\..\HeadBoundsCache.cs" Link="HeadBoundsCache.cs" />
+    <Compile Include="..\..\HitMarkerScopes.cs" Link="HitMarkerScopes.cs" />
+    <EmbeddedResource Include="..\..\Assets\EnemyNames.defaults.json" LogicalName="KillFeed.EnemyNames.defaults.json" />
     <!-- The shipped marker set is asserted pixel for pixel, so the test assembly embeds the same files. -->
-    <EmbeddedResource Include="..\..\BepInEx\plugins\GTFOKillFeed\Assets\icons\hitmark-*.png" LogicalName="KillFeed.Icons.%(Filename)%(Extension)" />
+    <EmbeddedResource Include="..\..\Assets\icons\hitmark-*.png" LogicalName="KillFeed.Icons.%(Filename)%(Extension)" />
     <!-- The shipped cue set is asserted byte for byte, so the test assembly embeds the same files. -->
-    <EmbeddedResource Include="..\..\src\KillFeed.Audio.*.wav" LogicalName="%(Filename)%(Extension)" />
+    <EmbeddedResource Include="..\..\Assets\audio\*.wav" LogicalName="KillFeed.Audio.%(Filename)%(Extension)" />
   </ItemGroup>
 </Project>

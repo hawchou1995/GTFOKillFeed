@@ -30,3 +30,22 @@ internal struct CorpseFadeRetry
     internal static bool IsTransient(CorpseFadeOutcome reason)
         => reason == CorpseFadeOutcome.ConcurrencyCap || reason == CorpseFadeOutcome.NoFreeInstance;
 }
+
+// Query on demand, at most once per rendered frame. A later frame can see newly registered patches.
+internal struct CorpseFadeFrameRisk
+{
+    private bool _hasFrame;
+    private int _frame;
+    private string _risk;
+
+    internal string Get(int frame, Func<string> query)
+    {
+        if (!_hasFrame || _frame != frame)
+        {
+            _risk = query();
+            _frame = frame;
+            _hasFrame = true;
+        }
+        return _risk;
+    }
+}

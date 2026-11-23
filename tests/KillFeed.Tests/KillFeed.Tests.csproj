@@ -9,28 +9,24 @@
     <RootNamespace>KillFeed.Tests</RootNamespace>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
-    <GTFO_DIR Condition="'$(GTFO_DIR)' == ''"></GTFO_DIR>
+    <GTFO_DIR Condition="'$(GTFO_DIR)' == ''">C:\Program Files (x86)\Steam\steamapps\common\GTFO</GTFO_DIR>
     <NoWarn>$(NoWarn);CS0169;CS0414;CS0649;CS0108;CS0114;CS0618;CS0672;CS0809;CS3021;CS8981</NoWarn>
   </PropertyGroup>
-
   <ItemGroup>
-    <!-- Production sources are linked, not copied: the tests execute the same policy code the plugin ships. -->
-    <!-- 1.2.19 tree: CorpseBurstPlan/HitKind live in FeedbackPolicy.cs, HitSoundState/HitSoundStyle/
-         HitCueKind in HitSoundPolicy.cs, HitMarkerKind/HitMarkerAction in HitMarkerPolicy.cs, and
-         KillCard/KillDecision/KillKind/KillTier/KillTierBoundaries/KillFlight in KillPolicy.cs, so the
-         decompiled one-file-per-type units are no longer linked here. -->
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\CfgPresence.cs" Link="prod\CfgPresence.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\SoundSettings.cs" Link="prod\SoundSettings.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\SoundConfigPlan.cs" Link="prod\SoundConfigPlan.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\SoundConfigBinding.cs" Link="prod\SoundConfigBinding.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\CorpseSwitches.cs" Link="prod\CorpseSwitches.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\HitSoundPolicy.cs" Link="prod\HitSoundPolicy.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\HitMarkerPolicy.cs" Link="prod\HitMarkerPolicy.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\FeedbackPolicy.cs" Link="prod\FeedbackPolicy.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\KillPolicy.cs" Link="prod\KillPolicy.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\ConfigHotReloadGate.cs" Link="prod\ConfigHotReloadGate.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\KillViewPolicy.cs" Link="prod\KillViewPolicy.cs" />
-    <Compile Include="..\..\src\HawChow.GTFOKillFeed\KillViewConfigApply.cs" Link="prod\KillViewConfigApply.cs" />
+    <!-- Upstream (1.2.17) suite adapted to the hand-written tree: the local sources hold several types per
+         file, so the files below are linked instead of the one-type-per-file layout of the company repo. -->
+    <Compile Include="..\..\CfgPresence.cs" Link="prod\CfgPresence.cs" />
+    <Compile Include="..\..\SoundSettings.cs" Link="prod\SoundSettings.cs" />
+    <Compile Include="..\..\SoundConfigPlan.cs" Link="prod\SoundConfigPlan.cs" />
+    <Compile Include="..\..\SoundConfigBinding.cs" Link="prod\SoundConfigBinding.cs" />
+    <Compile Include="..\..\CorpseSwitches.cs" Link="prod\CorpseSwitches.cs" />
+    <Compile Include="..\..\HitSoundPolicy.cs" Link="prod\HitSoundPolicy.cs" />
+    <Compile Include="..\..\HitMarkerPolicy.cs" Link="prod\HitMarkerPolicy.cs" />
+    <Compile Include="..\..\FeedbackPolicy.cs" Link="prod\FeedbackPolicy.cs" />
+    <Compile Include="..\..\KillPolicy.cs" Link="prod\KillPolicy.cs" />
+    <Compile Include="..\..\ConfigHotReloadGate.cs" Link="prod\ConfigHotReloadGate.cs" />
+    <Compile Include="..\..\KillViewPolicy.cs" Link="prod\KillViewPolicy.cs" />
+    <Compile Include="..\..\KillViewConfigApply.cs" Link="prod\KillViewConfigApply.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Harness.cs" />
     <Compile Include="SoundTests.cs" />
@@ -40,7 +36,6 @@
     <Compile Include="CombinedConfigTests.cs" />
     <Compile Include="SourceGateTests.cs" />
   </ItemGroup>
-
   <ItemGroup>
     <Reference Include="$(GTFO_DIR)\BepInEx\core\BepInEx.Core.dll">
       <Private>true</Private>

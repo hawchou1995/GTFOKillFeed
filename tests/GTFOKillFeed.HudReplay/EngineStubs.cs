@@ -25,7 +25,13 @@ namespace UnityEngine
     {
         public bool enabled; public GameObject gameObject=new(); public int cullingMask=32,pixelWidth=2560,pixelHeight=1440;
         public Rect rect=new(0,0,1,1);public Texture2D targetTexture=new();
-        public Vector3 WorldToScreenPoint(Vector3 v)=>v;
+        public float ProjectOffset;public float ViewportDepth=1f;
+        // A camera that renders into a texture answers in that texture's pixels, exactly as Unity does; a window
+        // camera answers in its own pixelWidth/pixelHeight.
+        public int InternalWidth=>targetTexture!=null?targetTexture.width:pixelWidth;
+        public int InternalHeight=>targetTexture!=null?targetTexture.height:pixelHeight;
+        public Vector3 WorldToScreenPoint(Vector3 v)=>new(v.x+ProjectOffset,v.y,v.z);
+        public Vector3 WorldToViewportPoint(Vector3 v)=>new((v.x+ProjectOffset)/InternalWidth,v.y/InternalHeight,v.z*ViewportDepth);
     }
     public static class Screen {public static int width=2560,height=1440;}
     public static class Mathf {public static float Clamp(float v,float min,float max)=>Math.Clamp(v,min,max);}
@@ -62,6 +68,8 @@ public static class GameStateManager {public static eGameStateName CurrentStateN
 public static class GuiManager {public static PlayerGuiLayer PlayerLayer;}
 public class PlayerGuiLayer
 {
+    private static int NextPointer;
+    public IntPtr Pointer { get; } = new IntPtr(++NextPointer);
     public bool Visible=true; public bool IsVisible()=>Visible;
     public PUI_LocalPlayerStatus m_playerStatus=new(); public GuiLayerBase GuiLayerBase=new();
 }

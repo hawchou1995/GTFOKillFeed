@@ -537,20 +537,29 @@ internal static class CorpseFeedback
                     && FeedbackPolicy.ShouldHideCorpse(item.LaunchApplications, item.RagdollInactive)
                     && (!switches.LaunchActive || item.LaunchApplications > 0 || item.LaunchClosed))
                 {
-                    bool wait = false;
-                    try { wait = !item.OffSceneCleanupApplied && DeathLedger.InLevel && CorpseFade.StillWithoutInstances() && NativeDecay(item) == null; }
-                    catch (Exception error) { Warn(error); }
-                    if (wait)
-                        item.Fade.Observe(age, CorpseFade.WaitAtDeadline());
+                    if (CorpseFade.SkipBeforeSelection(item.OffSceneCleanupApplied, DeathLedger.InLevel, item.Sequence))
+                        item.Fade.Observe(age, CorpseFadeAttempt.Finished);
+                    else if (TryReuseGameFade(item))
+                        item.Fade.Observe(age, CorpseFadeAttempt.Finished);
+                    else if (TryGameCoroutine(item))
+                        item.Fade.Observe(age, CorpseFadeAttempt.Started);
                     else
                     {
-                        bool prepared = CorpseFadePrep.Attempt(() => FadeRenderer(item), fadeTarget =>
+                        bool wait = false;
+                        try { wait = !item.OffSceneCleanupApplied && DeathLedger.InLevel && CorpseFade.StillWithoutInstances() && NativeDecay(item) == null; }
+                        catch (Exception error) { Warn(error); }
+                        if (wait)
+                            item.Fade.Observe(age, CorpseFade.WaitAtDeadline());
+                        else
                         {
-                            item.Fade.Observe(age, CorpseFade.TryBegin(fadeTarget as Renderer, item.OffSceneCleanupApplied,
-                                DeathLedger.InLevel, item.Sequence, NativeDecay(item), deferTransient: true));
-                            return true;
-                        }, Warn);
-                        if (!prepared) item.Fade.Observe(age, CorpseFadeAttempt.Finished);
+                            bool prepared = CorpseFadePrep.Attempt(() => FadeRenderer(item), fadeTarget =>
+                            {
+                                item.Fade.Observe(age, CorpseFade.TryBegin(fadeTarget as Renderer, item.OffSceneCleanupApplied,
+                                    DeathLedger.InLevel, item.Sequence, NativeDecay(item), deferTransient: true));
+                                return true;
+                            }, Warn);
+                            if (!prepared) item.Fade.Observe(age, CorpseFadeAttempt.Finished);
+                        }
                     }
                 }
                 if (age >= item.EndAt)
@@ -567,14 +576,25 @@ internal static class CorpseFeedback
                     {
                         // Optional native dissolve, started before Hide so the clone keeps the corpse's last pose.
                         // CorpseFadePrep owns the exception barrier: a throwing probe cannot skip Hide/Recycle/RemoveAt.
-                        CorpseFadePrep.Attempt(
-                            () => FadeRenderer(item),
-                            fadeTarget =>
+                        if (!item.Fade.Resolved)
+                        {
+                            if (CorpseFade.SkipBeforeSelection(item.OffSceneCleanupApplied, DeathLedger.InLevel, item.Sequence))
+                                item.Fade.Observe(age, CorpseFadeAttempt.Finished);
+                            else if (TryReuseGameFade(item))
+                                item.Fade.Observe(age, CorpseFadeAttempt.Finished);
+                            else if (TryGameCoroutine(item))
+                                item.Fade.Observe(age, CorpseFadeAttempt.Started);
+                            else
                             {
-                                if (!item.Fade.Resolved) item.Fade.Observe(age, CorpseFade.TryBegin(fadeTarget as Renderer, item.OffSceneCleanupApplied, DeathLedger.InLevel, item.Sequence, NativeDecay(item)));
-                                return true;
-                            },
-                            Warn);
+                                CorpseFadePrep.Attempt(
+                                    () => FadeRenderer(item),
+                                    fadeTarget =>
+                                    {
+                                        item.Fade.Observe(age, CorpseFade.TryBegin(fadeTarget as Renderer, item.OffSceneCleanupApplied, DeathLedger.InLevel, item.Sequence, NativeDecay(item)));
+                                        return true;
+                                    }, Warn);
+                            }
+                        }
                         item.Model?.Hide(); item.Ragdoll?.Hide();
                         bool physicsAlreadyRecycled = item.OffSceneCleanupApplied;
                         if (!physicsAlreadyRecycled)
@@ -1170,6 +1190,52 @@ internal static class CorpseFeedback
         }
         catch (Exception error) { Warn(error); return null; }
     }
+    // The death-state slot can point to a game-owned pool object outside this corpse's hierarchy.
+    // Read the slot, not the coroutine; prove its bound renderer is under one of this corpse's roots.
+    private static bool TryReuseGameFade(Corpse item)
+    {
+        if (item.OffSceneCleanupApplied || !DeathLedger.InLevel || Plugin.CorpseFade?.Value != true) return false;
+        try
+        {
+            var enemy = item.Enemy;
+            if (enemy == null || enemy.Pointer != item.Identity || enemy.Alive) return false;
+            var locomotion = enemy.Locomotion;
+            if (locomotion == null || locomotion.CurrentStateEnum != ES_StateEnum.Dead) return false;
+            var decay = locomotion.Dead?.TryCast<ES_Dead>()?.m_decay;
+            if (decay == null || !decay.m_playing) return false;
+            var target = decay.m_targetRenderer;
+            if (target == null || target.Pointer == IntPtr.Zero) return false;
+            var node = target.transform;
+            var model = enemy.MainModelGO;
+            var ragdoll = enemy.RagdollInstance;
+            // Use only current native roots, not a captured model or ragdoll from a prior lease.
+            if (node == null || !(Within(node, enemy.transform) || (model != null && Within(node, model.transform))
+                || (ragdoll != null && Within(node, ragdoll.transform)))) return false;
+            return CorpseFade.TryReusePlaying(decay, target, item.Sequence);
+        }
+        catch (Exception error) { Warn(error); return false; }
+    }
+
+    private static bool Within(Transform child, Transform root) => root != null && (child == root || child.IsChildOf(root));
+
+    // DBO route, gated by CorpseFade (starved pool, no playing decay, compat clear). The death state must still
+    // be this corpse's own: identity, not alive, ordinary Dead state. No patch, no new pool, no cleanup takeover.
+    private static bool TryGameCoroutine(Corpse item)
+    {
+        if (item.OffSceneCleanupApplied || !DeathLedger.InLevel || Plugin.CorpseFade?.Value != true) return false;
+        try
+        {
+            var enemy = item.Enemy;
+            if (enemy == null || enemy.Pointer != item.Identity || enemy.Alive) return false;
+            var locomotion = enemy.Locomotion;
+            if (locomotion == null || locomotion.CurrentStateEnum != ES_StateEnum.Dead) return false;
+            var dead = locomotion.Dead?.TryCast<ES_Dead>();
+            if (dead == null) return false;
+            return CorpseFade.StartGameCoroutine(dead, enemy, item.Sequence);
+        }
+        catch (Exception error) { Warn(error); return false; }
+    }
+
     // The corpse's own native Decay component (the one the game's ES_Dead drives). Read-only lookup over the
     // snapshotted roots AND the ragdoll lease root: nothing is created, no pool is touched, and a destroyed
     // hierarchy answers null.

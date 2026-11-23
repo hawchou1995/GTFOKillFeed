@@ -250,9 +250,98 @@ try {
     if ((Find-Indices $tickIl { param($ins) Test-MethodOperand $ins 'HawChow.GTFOKillFeed.CorpseFadeRetry' 'CanPrepare' }).Count -ne 1) {
         throw 'The early fade barrier must be guarded by CorpseFadeRetry.CanPrepare exactly once.'
     }
+    $beginIl = Get-Instructions (Get-Method $fade 'TryBegin')
+    $risk = @(Find-Indices $beginIl { param($i) Test-MethodOperand $i 'HawChow.GTFOKillFeed.CorpseFade' 'DelayedCallbackRisk' })
+    $skip = @(Find-Indices $beginIl { param($i) $i.OpCode.Name -eq 'stsfld' -and $i.Operand.Name -eq '_compatSkipped' })
+    $native = @(Find-Indices $beginIl { param($i) Test-MethodOperand $i 'HawChow.GTFOKillFeed.CorpseFade' 'TryNative' })
+    $pool = @(Find-Indices $beginIl { param($i) Test-MethodOperand $i 'HawChow.GTFOKillFeed.CorpseFadeCoordinator' 'TryStart' })
+    if ($risk.Count -ne 1 -or $skip.Count -ne 1 -or $native.Count -ne 1 -or $pool.Count -ne 1 -or $risk[0] -ge $skip[0] -or $skip[0] -ge $native[0] -or $native[0] -ge $pool[0]) { throw 'Compatibility refusal must precede both native playback paths.' }
+    $storeRisk = $beginIl[$risk[0]+1]; $loadRisk = $storeRisk.Next; $riskBranch = $loadRisk.Next
+    if ($storeRisk.OpCode.Name -notlike 'stloc*' -or $loadRisk.OpCode.Name -notlike 'ldloc*' -or $storeRisk.Operand -ne $loadRisk.Operand -or $riskBranch.OpCode.Name -notin @('brfalse','brfalse.s') -or $riskBranch.Operand.Offset -le $beginIl[$skip[0]].Offset -or $riskBranch.Operand.Offset -ge $beginIl[$native[0]].Offset -or $riskBranch.Next.Operand.Name -ne '_compatSkipped') { throw 'Risk polarity: only a non-null fresh patch result may enter the refusal.' }
+    # Follow both edges of each logger branch. A counter or a log is NOT a refusal if any path falls through.
+    $edges = New-Object 'System.Collections.Generic.Stack[Mono.Cecil.Cil.Instruction]'
+    $seenOffsets = New-Object 'System.Collections.Generic.HashSet[int]'
+    $edges.Push($beginIl[$skip[0]+1]); $exits = 0
+    while ($edges.Count) {
+        $at = $edges.Pop(); if (-not $seenOffsets.Add($at.Offset)) { continue }
+        if ($at.Offset -ge $beginIl[$native[0]].Offset -or $at.Offset -le $beginIl[$skip[0]].Offset) { throw 'Compatibility refusal can fall through to playback.' }
+        if ($at.OpCode.Name -in @('leave','leave.s')) {
+            if ($at.Operand.Next.OpCode.Name -ne 'ret' -or $at.Previous.OpCode.Name -notlike 'stloc*' -or $at.Previous.Previous.OpCode.Name -ne 'ldc.i4.0') { throw 'Compatibility refusal must exit with Finished.' }
+            $exits++; continue
+        }
+        if ($at.OpCode.FlowControl.ToString() -in @('Branch','Cond_Branch')) { $edges.Push($at.Operand) }
+        if ($at.OpCode.FlowControl.ToString() -ne 'Branch') { $edges.Push($at.Next) }
+    }
+    if ($exits -lt 1) { throw 'Missing compatibility early exit.' }
     # The barrier is only useful if the delegate that calls TryBegin is compiled somewhere else (a
     # lambda) and the cleanup still happens in Tick afterwards.
     $deferArguments = @()
+    $barriers = @(Find-Indices $tickIl { param($ins) Test-MethodOperand $ins 'HawChow.GTFOKillFeed.CorpseFadePrep' 'Attempt' })
+    $resolvedRead = @(Find-Indices $tickIl { param($ins) $ins.OpCode.Name -eq 'ldfld' -and $ins.Operand.DeclaringType.FullName -eq 'HawChow.GTFOKillFeed.CorpseFadeRetry' -and $ins.Operand.Name -eq 'Resolved' })
+    if ($resolvedRead.Count -ne 1 -or $resolvedRead[0] -le $barriers[0] -or $resolvedRead[0] -ge $barriers[1]) { throw 'EndAt must check Resolved before constructing the second barrier.' }
+    $branch = $tickIl[$resolvedRead[0]+1]
+    $finalHide = @(Find-Indices $tickIl { param($ins) Test-MethodOperand $ins 'HawChow.GTFOKillFeed.CorpseVisualLease' 'Hide' } | Where-Object { $_ -gt $barriers[1] })
+    if ($branch.OpCode.Name -notin @('brtrue','brtrue.s') -or $finalHide.Count -lt 1 -or $branch.Operand.Offset -le $tickIl[$barriers[1]].Offset -or $branch.Operand.Offset -ge $tickIl[$finalHide[0]].Offset) { throw 'Resolved must jump over final selection and play but not cleanup.' }
+    $preflightIl = Get-Instructions (Get-Method $fade 'SkipBeforeSelection')
+    $preflightRisk = @($preflightIl | Where-Object { Test-MethodOperand $_ 'HawChow.GTFOKillFeed.CorpseFade' 'DelayedCallbackRisk' })
+    $preflightLog = @($preflightIl | Where-Object { Test-MethodOperand $_ 'HawChow.GTFOKillFeed.CorpseFade' 'LogSkip' })
+    if ($preflightRisk.Count -ne 1 -or $preflightLog.Count -ne 1) { throw 'Compatibility preflight must query risk and log the refusal.' }
+    $playChoice = $preflightRisk[0].Previous
+    $playReason = $playChoice.Operand
+    $join = $preflightRisk[0].Next
+    if ($playChoice.Previous.Operand.Name -ne '_playPatched' -or $playChoice.OpCode.Name -notin @('brtrue','brtrue.s') -or
+        $playReason.OpCode.Name -ne 'ldc.i4.5' -or $playReason.Next.Operand.FullName -cne "System.String $($fade.Namespace).CorpseFadePolicy::Reason($($fade.Namespace).CorpseFadeSkip)" -or
+        $join.OpCode.Name -notin @('br','br.s') -or $join.Operand.Offset -ne $playReason.Next.Next.Offset) { throw 'Patched Play must refuse before the Initialize probe, through the same early exit.' }
+    $riskEdge = $join.Operand.Next.Next
+    $refuse = $preflightLog[0].Next
+    if ($riskEdge.OpCode.Name -notin @('brtrue','brtrue.s') -or $riskEdge.Next.OpCode.Name -ne 'ldc.i4.0' -or
+        $riskEdge.Operand.Operand.Name -ne '_compatBeforeScan' -or $refuse.OpCode.Name -notin @('leave','leave.s') -or
+        $refuse.Operand.OpCode.Name -ne 'ldc.i4.1' -or $refuse.Operand.Next.OpCode.Name -ne 'ret') { throw 'Only a non-null risk may report an early refusal, and that edge must return true.' }
+    $frameIl = Get-Instructions (Get-Method $fade 'DelayedCallbackRisk')
+    $frameCache = @($frameIl | Where-Object { Test-MethodOperand $_ 'HawChow.GTFOKillFeed.CorpseFadeFrameRisk' 'Get' })
+    if ($frameCache.Count -ne 1 -or -not (Test-MethodOperand $frameCache[0].Previous.Previous 'UnityEngine.Time' 'get_frameCount')) { throw 'Compatibility probe must use the frame risk cache keyed by frameCount.' }
+    $fadeResetIl = Get-Instructions (Get-Method $fade 'Reset')
+    $cacheReset = @($fadeResetIl | Where-Object { $_.OpCode.Name -eq 'ldsflda' -and $_.Operand.Name -eq '_frameRisk' -and $_.Next.OpCode.Name -eq 'initobj' })
+    $poolSummary = @($fadeResetIl | Where-Object { Test-MethodOperand $_ ($fade.Namespace + '.CorpseFadePoolFacts') 'DescribeLast' })
+    $poolReset = @($fadeResetIl | Where-Object { $_.OpCode.Name -eq 'ldsflda' -and $_.Operand.Name -eq '_lastPoolFacts' -and $_.Next.OpCode.Name -eq 'initobj' -and $_.Next.Operand.Name -eq 'Nullable`1' })
+    if ($poolSummary.Count -ne 1 -or $poolSummary[0].Previous.Operand.Name -ne '_lastPoolFacts' -or $poolReset.Count -ne 1 -or $poolReset[0].Offset -le $poolSummary[0].Offset) { throw 'Fade totals must report the nullable pool sample and clear it after reporting.' }
+    $sampleIl = Get-Instructions (Get-Method $fade 'SamplePool')
+    if (-not (Test-MethodOperand $sampleIl[0] $fade.FullName 'PoolFacts') -or @($sampleIl | Where-Object { $_.OpCode.Name -eq 'stsfld' -and $_.Operand.Name -eq '_lastPoolFacts' }).Count -ne 1) { throw 'Pool sampler must store a real observation.' }
+    foreach ($reader in @('TryBegin', 'StillWithoutInstances')) {
+        $readerIl = Get-Instructions (Get-Method $fade $reader)
+        if (@($readerIl | Where-Object { Test-MethodOperand $_ $fade.FullName 'SamplePool' }).Count -ne 1) { throw "Pool observations from $reader must reach the summary." }
+    }
+    if ($cacheReset.Count -ne 1) { throw 'Level reset must invalidate the frame risk cache.' }
+    $preflight = @(Find-Indices $tickIl { param($i) Test-MethodOperand $i 'HawChow.GTFOKillFeed.CorpseFade' 'SkipBeforeSelection' })
+    $reuse = @(Find-Indices $tickIl { param($i) Test-MethodOperand $i $feedback.FullName 'TryReuseGameFade' })
+    if ($reuse.Count -ne 2 -or $reuse[0] -le $preflight[0] -or $reuse[0] -ge $barriers[0] -or $reuse[1] -le $preflight[1] -or $reuse[1] -ge $barriers[1]) {
+        throw 'Game fade reuse must run after both compatibility gates and before either borrow path.'
+    }
+    $reuseSelectIl = Get-Instructions (Get-Method $feedback 'TryReuseGameFade')
+    $reusePlayIl = Get-Instructions (Get-Method $fade 'TryReusePlaying')
+    if (@($reuseSelectIl | Where-Object { Test-MethodOperand $_ 'ES_Dead' 'get_m_decay' }).Count -ne 1 -or
+        @($reuseSelectIl | Where-Object { Test-MethodOperand $_ $fade.FullName 'TryReusePlaying' }).Count -ne 1 -or
+        @($reusePlayIl | Where-Object { Test-MethodOperand $_ 'Decay' 'set_m_duration' }).Count -ne 1 -or
+        @($reusePlayIl | Where-Object { Test-MethodOperand $_ 'Decay' 'get_m_time' }).Count -ne 1 -or
+        @($reusePlayIl | Where-Object { Test-MethodOperand $_ ($fade.Namespace + '.CorpseFadePolicy') 'TryGameDuration' }).Count -ne 1) { throw 'Game fade reuse must consume the read-only state slot and set only the validated native duration.' }
+    foreach ($ins in ($reuseSelectIl + $reusePlayIl)) {
+        if ($ins.Operand -isnot [Mono.Cecil.MethodReference]) { continue }
+        $decl = $ins.Operand.DeclaringType.FullName
+        $name = $ins.Operand.Name
+        if (($decl -eq 'Decay' -and $name -notmatch '^(get_|set_m_duration$)') -or
+            ($decl -eq 'ES_Dead' -and $name -ne 'get_m_decay') -or $decl -like 'ObjectPooler*' -or
+            $name -in @('StartCoroutine','StopCoroutine','SetActive','Destroy','DestroyImmediate')) { throw "Unexpected native operation in game fade reuse: ${decl}::$name" }
+    }
+    Write-Host 'GAME_FADE_REUSE_IL=PASS;WRITE=duration-only;NEW_PLAY=0;BORROW=0;COROUTINE=0'
+    if ($preflight.Count -ne 2 -or $preflight[0] -ge $barriers[0] -or $preflight[1] -le $resolvedRead[0] -or $preflight[1] -ge $barriers[1]) { throw 'Both fade phases must preflight compatibility before selecting a renderer.' }
+    for ($phase = 0; $phase -lt 2; $phase++) {
+        $edge = $tickIl[$preflight[$phase]+1]
+        if ($edge.OpCode.Name -notin @('brfalse','brfalse.s') -or $edge.Operand.Offset -le $edge.Offset -or $edge.Operand.Offset -ge $tickIl[$barriers[$phase]].Offset) { throw 'Only the no-risk preflight edge may enter the renderer barrier.' }
+        $skipObserve = @($tickIl | Where-Object { $_.Offset -gt $edge.Offset -and $_.Offset -lt $edge.Operand.Offset -and (Test-MethodOperand $_ 'HawChow.GTFOKillFeed.CorpseFadeRetry' 'Observe') })
+        if ($skipObserve.Count -ne 1 -or $skipObserve[0].Previous.OpCode.Name -ne 'ldc.i4.0') { throw 'Compatibility skip must finish (not retry or start) the fade attempt in both phases.' }
+        $skipEdge = @($tickIl | Where-Object { $_.Offset -gt $edge.Offset -and $_.Offset -lt $edge.Operand.Offset -and $_.OpCode.Name -in @('br','br.s','leave','leave.s') })
+        if ($skipEdge.Count -ne 1 -or $skipEdge[0].Operand.Offset -le $tickIl[$barriers[$phase]].Offset -or ($phase -eq 1 -and $skipEdge[0].Operand.Offset -ge $tickIl[$finalHide[0]].Offset)) { throw 'Compatibility skip must bypass renderer selection without bypassing cleanup.' }
+    }
     foreach ($type in $feedback.NestedTypes) {
         foreach ($method in $type.Methods) {
             if (-not $method.HasBody) { continue }
@@ -264,7 +353,10 @@ try {
                 }
                 $flag = $lambdaIl[$callAt - 1].OpCode.Name
                 if ($flag -notin @('ldc.i4.0','ldc.i4.1')) { throw 'TryBegin deferTransient must be an explicit phase-specific Boolean.' }
-                $isFinal = @(Find-Indices $lambdaIl { param($ins) $ins.Operand -is [Mono.Cecil.FieldReference] -and $ins.Operand.DeclaringType.FullName -eq 'HawChow.GTFOKillFeed.CorpseFadeRetry' -and $ins.Operand.Name -eq 'Resolved' }).Count -eq 1
+                $wire = @(Find-Indices $tickIl { param($ins) $ins.OpCode.Name -eq 'ldftn' -and $ins.Operand.FullName -eq $method.FullName })
+                if ($wire.Count -ne 1 -or $wire[0] -ge $barriers[1]) { throw 'Each TryBegin delegate must be wired into exactly one Tick preparation phase.' }
+                $isFinal = $wire[0] -gt $resolvedRead[0]
+                if (-not $isFinal -and $wire[0] -ge $barriers[0]) { throw 'Early delegate must precede its own barrier.' }
                 $expectedFlag = if ($isFinal) { 'ldc.i4.0' } else { 'ldc.i4.1' }
                 if ($flag -ne $expectedFlag) { throw 'Fade retry phase requires preparation=true, EndAt=false, selected from the real Resolved guard.' }
                 $deferArguments += $flag
@@ -865,6 +957,8 @@ try {
             $zeros = @(Find-Indices $candidateIl { param($ins) Test-MethodOperand $ins 'HawChow.GTFOKillFeed.CorpseFade' 'StillWithoutInstances' })
             $waits = @(Find-Indices $candidateIl { param($ins) Test-MethodOperand $ins 'HawChow.GTFOKillFeed.CorpseFade' 'WaitAtDeadline' })
             if ($candidate.Name -ne 'Tick' -or $decayCalls.Count -ne 1 -or $zeros.Count -ne 1 -or $waits.Count -ne 1 -or $zeros[0] -ge $decayCalls[0] -or $decayCalls[0] -ge $waits[0]) { throw 'The only non-play lookup must check zero inventory and corpse ownership before waiting until EndAt.' }
+            $allowed = $tickIl[$preflight[0]+1].Operand.Offset
+            if ($candidateIl[$zeros[0]].Offset -lt $allowed -or $candidateIl[$waits[0]].Offset -ge $tickIl[$barriers[0]].Offset) { throw 'Zero-inventory preflight and the non-play component lookup must follow the no-risk edge.' }
         }
     }
     if ($nativeDecayCalls -ne 3 -or $playLambdas -ne 2) {
@@ -993,7 +1087,7 @@ try {
     # F5: every terminal line is claimed exactly once per scheduleId, and a receipt (fallback/native-unavailable)
     # never claims one - so `fade=fallback` can no longer eat a corpse's terminal budget.
     $claimSites = @()
-    foreach ($terminalSite in @('TryNative', 'LogStarted', 'LogStartedUnknown', 'LogSkip', 'LogFailure')) {
+    foreach ($terminalSite in @('TryNative', 'TryReusePlaying', 'StartGameCoroutine', 'LogStarted', 'LogStartedUnknown', 'LogSkip', 'LogFailure')) {
         $siteIl = Get-Instructions (Get-Method $fade $terminalSite)
         $claimSites += @(Find-Indices $siteIl { param($ins) Test-MethodOperand $ins 'HawChow.GTFOKillFeed.CorpseFadeDiagnostics' 'ClaimTerminal' }).Count
     }
@@ -1005,8 +1099,8 @@ try {
             throw "CorpseFade.$receiptSite must spend the bounded reason budget (AllowLine) exactly once and never the terminal allowance (F5)."
         }
     }
-    if (($claimSites -join ',') -ne '1,1,1,1,2' -or $receiptClaims -ne 0) {
-        throw "The terminal allowance must be claimed exactly once by TryNative/LogStarted/LogStartedUnknown/LogSkip and twice by LogFailure's two branches, and never by a receipt; found claims=$($claimSites -join ','), receiptClaims=$receiptClaims (F5)."
+    if (($claimSites -join ',') -ne '1,1,1,1,1,1,2' -or $receiptClaims -ne 0) {
+        throw "The terminal allowance must be claimed once by TryNative/TryReusePlaying/StartGameCoroutine/LogStarted/LogStartedUnknown/LogSkip and twice by LogFailure, never by receipts; found claims=$($claimSites -join ','), receiptClaims=$receiptClaims (F5)."
     }
     $diagnosticsType = $module.GetType('HawChow.GTFOKillFeed.CorpseFadeDiagnostics')
     if ($null -eq $diagnosticsType) { throw 'CorpseFadeDiagnostics is missing: the terminal allowance lives there (F5).' }

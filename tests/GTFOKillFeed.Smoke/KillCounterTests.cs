@@ -71,10 +71,9 @@ internal static class KillCounterTests
         check(committed.Started && committed.Resolved, "fade commitment remains monotonic after observations");
 
         DirectoryInfo root = new DirectoryInfo(AppContext.BaseDirectory);
-        // Public layout: the project file is src/GTFOKillFeed.csproj and the sources live in src/HawChow.GTFOKillFeed.
-        while (root != null && !File.Exists(Path.Combine(root.FullName, "src", "GTFOKillFeed.csproj"))) root = root.Parent;
+        while (root != null && !File.Exists(Path.Combine(root.FullName, "GTFOKillFeed.csproj"))) root = root.Parent;
         if (root == null) throw new InvalidOperationException("counter source root missing");
-        string tracker = File.ReadAllText(Path.Combine(root.FullName, "src", "HawChow.GTFOKillFeed", "KillTracker.cs"));
+        string tracker = File.ReadAllText(Path.Combine(root.FullName, "KillTracker.cs"));
         int build = tracker.IndexOf("KillPresentation presentation = KillPresentationPolicy.Build", StringComparison.Ordinal);
         int add = tracker.IndexOf("Counters.Add(presentation.Tier)", StringComparison.Ordinal);
         int sound = tracker.IndexOf("HitSound.OnLocalKill", StringComparison.Ordinal);
@@ -83,15 +82,15 @@ internal static class KillCounterTests
         int preview = tracker.IndexOf("internal static void AddPreview", StringComparison.Ordinal);
         check(preview > add && !tracker.Substring(preview).Contains("Counters.Add("), "F9 preview cannot change real kill totals");
         check(tracker.Contains("Counters.Reset(); KillCounterHud.Reset();"), "level-reset clears counter and native anchor");
-        string hud = File.ReadAllText(Path.Combine(root.FullName, "src", "HawChow.GTFOKillFeed", "KillCounterHud.cs"));
+        string hud = File.ReadAllText(Path.Combine(root.FullName, "KillCounterHud.cs"));
         check(hud.Contains("m_healthWidth") && hud.Contains("m_healthStartPos") && hud.Contains("m_cellUICanvas")
             && hud.Contains("KillCounterAnchorPolicy.ManualRefusal(") && !hud.Contains("Camera.main") && !hud.Contains("FindObjectsOfType"),
             "counter verifies its own manual CellUI compositor without a scene scan or main-camera guess");
         check(hud.Contains("GUI.matrix = previousMatrix * Matrix4x4.TRS") && hud.Contains("GUI.matrix = previousMatrix;")
             && hud.Contains("CalcSize(Contents[i])"), "counter scales measured glyphs and icons together and restores GUI state");
-        string corpse = File.ReadAllText(Path.Combine(root.FullName, "src", "HawChow.GTFOKillFeed", "CorpseFeedback.cs"));
+        string corpse = File.ReadAllText(Path.Combine(root.FullName, "CorpseFeedback.cs"));
         check(corpse.Contains("if (!prepared) item.Fade.Observe(age, CorpseFadeAttempt.Finished);")
-            && corpse.Contains("if (!item.Fade.Resolved) item.Fade.Observe("), "preparation exceptions terminate retries and successful fades are not replayed at cleanup");
+            && System.Text.RegularExpressions.Regex.IsMatch(corpse, @"if \(!item\.Fade\.Resolved\)\s*\{\s*if \(CorpseFade\.SkipBeforeSelection"), "completed fades never select a renderer again at cleanup; preparation exceptions terminate retries");
         check(corpse.Contains("bool releaseVisual = FeedbackPolicy.ShouldHideCorpse(item.LaunchApplications, item.RagdollInactive) || item.Fade.Started;"),
             "EndAt honors the successful-dissolve commitment after launch hot reload");
         ExportPreview();

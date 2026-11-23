@@ -104,7 +104,7 @@ internal readonly struct StaggerHitVerdict
 internal static class StaggerHitPolicy
 {
     // ES_HitreactType values, pinned against the installed interop
-    // (BepInEx/interop/Modules-ASM.dll) by tools/Test-StaggerInkIl.ps1.
+    // (BepInEx/interop/Modules-ASM.dll) by scripts/Test-StaggerInkIl.ps1.
     internal const int HitreactUnspecified = 0;
     internal const int HitreactNone = 1;
     internal const int HitreactMicro = 2;

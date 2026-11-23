@@ -1,7 +1,9 @@
 using System;
 using System.Reflection;
+using Enemies;
 using CharacterDestruction;
 using HarmonyLib;
+using Il2CppInterop.Runtime.InteropTypes;
 using UnityEngine;
 
 namespace HawChow.GTFOKillFeed;
@@ -253,22 +255,50 @@ internal static class CorpseFade
     private static readonly CorpseFadeDiagnostics Diagnostics = new();
     private static bool _patchChecked;
     private static bool _playPatched;
+    private static MethodInfo _skinnedInitialize;
+    private const string PatchReadFailed = "init-patches-unreadable";
+    private static readonly Func<string> ReadCallbackRisk = ReadDelayedCallbackRisk;
+    private static CorpseFadeFrameRisk _frameRisk;
+    private static int _compatBeforeScan;
+    private static int _compatSkipped;
     private static int _started, _deferred, _skipped, _failed;
+    private static int _gameReused, _gameRetimed;
+    private static int _gameCoroutines;
+    private static MethodInfo _decayDelayed;
+    private const float GameCoroutineDelay = 0.1f;
     // 1.2.26: the pooled path's own back-off (see CorpseFadeBackoff). A struct on purpose: it is per-level state
     // that is reset with the level, and it never touches a native object.
     private static CorpseFadeBackoff _backoff;
     // How many corpses this level declined to even ask the pool about, and the last pool shape we read - both
     // printed once at the level boundary, so "the dissolve stopped" and "the log stopped recording it" differ.
     private static int _backedOff;
-    private static CorpseFadePoolFacts _lastPoolFacts = CorpseFadePoolFacts.Missing;
+    private static CorpseFadePoolFacts? _lastPoolFacts;
     private static int _zeroSkipped, _deadlineWaits;
     // A cached zero alone is never enough: a newly available slot must restore normal preparation.
-    internal static bool StillWithoutInstances() => _lastPoolFacts.State == CorpseFadePoolState.ZeroInstances
+    internal static bool StillWithoutInstances() => _lastPoolFacts?.State == CorpseFadePoolState.ZeroInstances
         && _patchChecked && !_playPatched && Plugin.CorpseFade?.Value == true && Plugin.CorpseEffects?.Value != false
-        && !Paused() && PoolFacts().State == CorpseFadePoolState.ZeroInstances;
+        && !Paused() && SamplePool().State == CorpseFadePoolState.ZeroInstances;
     internal static CorpseFadeAttempt WaitAtDeadline() { _deadlineWaits++; return CorpseFadeAttempt.AtDeadline; }
 
     internal static int Active => Coordinator.Active;
+
+    // The compatibility decision needs no corpse object. Reject before crossing into the renderer hierarchy.
+    internal static bool SkipBeforeSelection(bool offScene, bool inLevel, int scheduleId)
+    {
+        try
+        {
+            if (offScene || !inLevel || Plugin.CorpseFade?.Value != true || Plugin.CorpseEffects?.Value == false || Paused())
+                return false;
+            CheckPlayPatches();
+            string risk = _playPatched ? CorpseFadePolicy.Reason(CorpseFadeSkip.PatchedByThirdParty) : DelayedCallbackRisk();
+            if (risk == null) return false;
+            _compatBeforeScan++;
+            _compatSkipped++;
+            LogSkip(CorpseFadeSkip.PatchedByThirdParty, CorpseFadeHazard.None, scheduleId, risk);
+        }
+        catch (Exception) { /* Fail closed without letting optional fade interrupt the cleanup. */ }
+        return true;
+    }
 
     // Read-only query used when the corpse picks WHICH renderer to dissolve (CorpseFeedback.FadeRenderer). It runs
     // the very same classification the pooled gate uses, so "selected" and "armed" can never disagree: a renderer
@@ -285,13 +315,7 @@ internal static class CorpseFade
     {
         try
         {
-            if (!_patchChecked)
-            {
-                _playPatched = PlayIsPatched();
-                _patchChecked = true;
-                if (_playPatched && Diagnostics.AllowLine(CorpseFadePolicy.Reason(CorpseFadeSkip.PatchedByThirdParty)))
-                    Plugin.Instance?.Log.LogInfo("[CORPSE] fade=disabled;reason=" + CorpseFadePolicy.Reason(CorpseFadeSkip.PatchedByThirdParty) + ";detail=Decay.Play has third-party patches");
-            }
+            CheckPlayPatches();
             // 1.2.26: the cheap, side-effect-free gates are answered ONCE, in the order the policy asks them, so the
             // back-off can decide whether the hierarchy walk below is worth anything at all. Before this, every
             // corpse in a swarm paid a subtree/ancestor/sibling scan (1.2.22 hazard) and up to three attempts to
@@ -300,10 +324,19 @@ internal static class CorpseFade
             bool corpseEffects = Plugin.CorpseEffects == null || Plugin.CorpseEffects.Value;
             bool paused = Paused();
             bool prefabSafe = PrefabIsSafe();
-            CorpseFadePoolFacts poolFacts = PoolFacts();
-            _lastPoolFacts = poolFacts;
-            // Every cheap gate at once: while any of them is shut the pool is neither observed nor backed off, so a
-            // disabled/paused/lobby corpse neither logs a back-off nor arms a cooldown.
+            CorpseFadePoolFacts poolFacts = SamplePool();
+            // A delayed writer can wake the SAME pool object after it is returned and reused, even by a mesh arm.
+            // Do not add our own playback. Preserve the dedicated zero-inventory accounting if neither route exists.
+            string risk = fadeEnabled && corpseEffects && inLevel && !paused && !_playPatched && !offScene
+                && renderer != null && (native != null || poolFacts.State != CorpseFadePoolState.ZeroInstances)
+                ? DelayedCallbackRisk() : null;
+            if (risk != null)
+            {
+                _compatSkipped++;
+                LogSkip(CorpseFadeSkip.PatchedByThirdParty, CorpseFadeHazard.None, scheduleId, risk);
+                return CorpseFadeAttempt.Finished;
+            }
+            // Disabled, paused and lobby corpses must not arm a cooldown.
             bool gateOpen = fadeEnabled && corpseEffects && inLevel && !paused && !_playPatched && prefabSafe;
             if (poolFacts.State == CorpseFadePoolState.Missing || poolFacts.State == CorpseFadePoolState.ZeroInstances) _backoff.Reset();
             else if (gateOpen) LogBackoff(_backoff.Observe(poolFacts.IsReady, Coordinator.Active, Now()), poolFacts);
@@ -371,6 +404,89 @@ internal static class CorpseFade
         return CorpseFadeAttempt.Retry;
     }
 
+    // DBO's short native dissolve without replaying Play or driving the death coroutine. The source is proven
+    // by the caller and checked again here; the game still owns all callbacks and cleanup of this instance.
+    internal static bool TryReusePlaying(Decay decay, Renderer target, int scheduleId)
+    {
+        if (Plugin.CorpseFade?.Value != true || Plugin.CorpseEffects?.Value == false || Paused()
+            || PlayIsPatched() || DelayedCallbackRisk() != null) return false;
+        try
+        {
+            if (decay == null || !decay.isActiveAndEnabled || !decay.m_playing || target == null) return false;
+            var bound = decay.m_targetRenderer;
+            var copy = decay.m_decayRenderer;
+            if (bound == null || bound.Pointer != target.Pointer || copy == null || copy.gameObject == target.gameObject
+                || copy.gameObject == decay.gameObject || !copy.enabled || !copy.gameObject.activeInHierarchy
+                || copy.forceRenderingOff || !FadeRendererCast.HasLiveCopy(copy)) return false;
+            float previous = decay.m_duration;
+            if (!CorpseFadePolicy.TryGameDuration(previous, decay.m_time, out float duration)) return false;
+            bool retimed = duration < previous;
+            if (retimed)
+            {
+                decay.m_duration = duration;
+                _gameRetimed++;
+            }
+            _gameReused++;
+            if (Diagnostics.ClaimTerminal(scheduleId))
+                Plugin.Instance?.Log.LogInfo($"[CORPSE] fade=reused;path=game-reuse;scheduleId={scheduleId};retimed={retimed};durationBefore={previous:0.000};duration={duration:0.000};note=no-new-play-or-borrow");
+            return true;
+        }
+        catch (Exception error) { Warn(error); return false; }
+    }
+
+    // DeadBodyOptimization's route without its detours: start the dissolve the GAME owns, on the corpse's own
+    // death state. No Harmony patch, no ES_* hook, no state-machine rewrite - one bounded reflection call that
+    // hands an IEnumerator to the enemy's own StartCoroutine. The game borrows, plays and cleans up; KillFeed
+    // only decides that a starved pool must not leave this corpse without a dissolve. Once per scheduleId.
+    internal static bool StartGameCoroutine(ES_Dead dead, EnemyAgent enemy, int scheduleId)
+    {
+        if (Plugin.CorpseFade?.Value != true || Plugin.CorpseEffects?.Value == false || Paused()) return false;
+        CheckPlayPatches();
+        if (_playPatched || DelayedCallbackRisk() != null) return false;
+        try
+        {
+            // A healthy pool keeps the corpse-own / pooled paths; this route exists for the starved case only.
+            if (SamplePool().IsReady) return false;
+            if (dead == null || enemy == null) return false;
+            var current = dead.m_decay;
+            if (current != null && current.m_playing) return false;
+            var method = ResolveDecayDelayed();
+            if (method == null) { LogFallback("game-coroutine-unavailable", scheduleId); return false; }
+            object coroutine = method.Invoke(dead, new object[] { GameCoroutineDelay, CorpseFadePolicy.FadeSeconds });
+            if (coroutine is not Il2CppObjectBase boxed || boxed.Pointer == IntPtr.Zero)
+            { LogFallback("game-coroutine-unavailable", scheduleId); return false; }
+            enemy.StartCoroutine(new Il2CppSystem.Collections.IEnumerator(boxed.Pointer));
+        }
+        catch (Exception error) { Warn(error); LogFallback("game-coroutine-threw", scheduleId); return false; }
+        // Review S3: the coroutine is ALREADY running here. Bookkeeping and the receipt are best effort, so a
+        // throwing log line can never make the caller fall through and borrow a second instance.
+        try
+        {
+            _gameCoroutines++;
+            if (Diagnostics.ClaimTerminal(scheduleId))
+                Plugin.Instance?.Log.LogInfo($"[CORPSE] fade=begun;path=game-coroutine;seconds={CorpseFadePolicy.FadeSeconds:0.00};delay={GameCoroutineDelay:0.00};scheduleId={scheduleId};note=game-owned-decaydelayed-no-patch");
+        }
+        catch (Exception receipt) { Warn(receipt); }
+        return true;
+    }
+    // Review S5: a private method declared on a base type is not returned by GetMethod on the derived type
+    // (FlattenHierarchy only affects statics), so walk the chain instead of accepting a silent null.
+    private static MethodInfo ResolveDecayDelayed()
+    {
+        if (_decayDelayed != null) return _decayDelayed;
+        try
+        {
+            for (Type type = typeof(ES_Dead); type != null && type != typeof(object); type = type.BaseType)
+            {
+                var found = type.GetMethod("DecayDelayed",
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly,
+                    null, new[] { typeof(float), typeof(float) }, null);
+                if (found != null) { _decayDelayed = found; return found; }
+            }
+        }
+        catch (Exception error) { Warn(error); }
+        return null;
+    }
     // Corpse-own Decay: play only an already-armed, safe component. This path never borrows or returns.
     private static bool TryNative(in CorpseFadePlan plan, Decay native, Renderer renderer, int scheduleId)
     {
@@ -384,7 +500,7 @@ internal static class CorpseFade
                 autoCleanup = native.m_autoCleanup;
                 playing = native.m_playing;
             }
-            catch (Exception error) { Warn(error); native = null; }
+            catch (Exception error) { Warn(error); LogFallback("native-state-unreadable", scheduleId); return false; }
         }
         CorpseFadeNativePath path = CorpseFadePolicy.NativePath(plan, native != null, stopAction, autoCleanup, playing);
         if (!CorpseFadePolicy.ShouldAttemptNative(path))
@@ -432,7 +548,8 @@ internal static class CorpseFade
     {
         if (!CorpseFadePolicy.ShouldLogNativeRefusal(path)) return;
         if (!Diagnostics.AllowLine(CorpseFadePolicy.Reason(path))) return;
-        Plugin.Instance?.Log.LogInfo($"[CORPSE] fade=native-unavailable;reason={CorpseFadePolicy.Reason(path)};stopAction={(stopAction < 0 ? "unreadable" : stopAction.ToString())};autoCleanup={autoCleanup};playing={playing};scheduleId={scheduleId}");
+        string facts = CorpseFadePolicy.NativeStateReceipt(path, stopAction, autoCleanup, playing);
+        Plugin.Instance?.Log.LogInfo($"[CORPSE] fade=native-unavailable;reason={CorpseFadePolicy.Reason(path)};{facts};scheduleId={scheduleId}");
     }
     // Bookkeeping only, decided from the real native state: an instance the game still animates (or
     // whose state cannot be read) keeps its slot, so the concurrency cap stays true across pauses,
@@ -466,15 +583,19 @@ internal static class CorpseFade
         if (suppressed > 0)
             Plugin.Instance?.Log.LogInfo($"[CORPSE] fade=summary;terminal-suppressed={suppressed};cap={CorpseFadeDiagnostics.MaxTerminalPerLevel};note=more-corpuses-than-the-terminal-allowance-this-level");
         Diagnostics.Reset();
-        if (_started + _deferred + _skipped + _failed + _backedOff + _deadlineWaits + Coordinator.UnknownStates > 0)
-            Plugin.Instance?.Log.LogInfo($"[CORPSE] fade=totals;started={_started};deferredAttempts={_deferred};skipped={_skipped};failed={_failed};backedOff={_backedOff};zeroAtDeadline={_zeroSkipped};deadlineWaits={_deadlineWaits};active={Coordinator.Active};idleObserved={Coordinator.GameReleases};playUnconfirmed={Coordinator.UnknownStates};manualReleases={Coordinator.ManualReleases};returnUnconfirmed={Coordinator.ReleaseUnconfirmed};arms={Target.ArmsAttempted};initSkinned={Target.SkinnedCalls};initMesh={Target.MeshCalls};armThrew={Target.ArmsThrew};armIncomplete={Target.ArmsIncomplete};{_lastPoolFacts.Describe()};note=full-counts-not-log-samples");
+        if (_gameReused + _gameCoroutines > 0) Plugin.Instance?.Log.LogInfo($"[CORPSE] fade=game-reuse-totals;reused={_gameReused};retimed={_gameRetimed};coroutines={_gameCoroutines};note=starts-only-not-completions-or-pool-returns");
+        _gameReused = _gameRetimed = _gameCoroutines = 0;
+        if (_started + _deferred + _skipped + _failed + _backedOff + _deadlineWaits + _gameReused + _gameCoroutines + Coordinator.UnknownStates > 0)
+            Plugin.Instance?.Log.LogInfo($"[CORPSE] fade=totals;started={_started};deferredAttempts={_deferred};skipped={_skipped};failed={_failed};backedOff={_backedOff};zeroAtDeadline={_zeroSkipped};deadlineWaits={_deadlineWaits};compatSkipped={_compatSkipped};compatBeforeScan={_compatBeforeScan};active={Coordinator.Active};idleObserved={Coordinator.GameReleases};playUnconfirmed={Coordinator.UnknownStates};manualReleases={Coordinator.ManualReleases};returnUnconfirmed={Coordinator.ReleaseUnconfirmed};arms={Target.ArmsAttempted};initSkinned={Target.SkinnedCalls};initMesh={Target.MeshCalls};armThrew={Target.ArmsThrew};armIncomplete={Target.ArmsIncomplete};{CorpseFadePoolFacts.DescribeLast(_lastPoolFacts)};note=full-counts-not-log-samples");
         _started = _deferred = _skipped = _failed = 0;
         // 1.2.26: the pool is rebuilt with the level, so the observation of the old one is worthless - and a new
         // level must be allowed to ask again on its very first corpse.
         _backoff.Reset();
         _backedOff = 0;
-        _lastPoolFacts = CorpseFadePoolFacts.Missing;
-        _zeroSkipped = _deadlineWaits = 0;
+        _lastPoolFacts = null;
+        _compatSkipped = _zeroSkipped = _deadlineWaits = 0;
+        _compatBeforeScan = 0;
+        _frameRisk = default;
         Target.ResetCounters();
         Coordinator.ResetCounters();
     }
@@ -483,6 +604,15 @@ internal static class CorpseFade
     {
         try { return Time.timeScale <= 0.0001f || Time.deltaTime <= 0f; }
         catch { return true; }
+    }
+
+    private static void CheckPlayPatches()
+    {
+        if (_patchChecked) return;
+        _playPatched = PlayIsPatched();
+        _patchChecked = true;
+        if (_playPatched && Diagnostics.AllowLine(CorpseFadePolicy.Reason(CorpseFadeSkip.PatchedByThirdParty)))
+            Plugin.Instance?.Log.LogInfo("[CORPSE] fade=disabled;reason=" + CorpseFadePolicy.Reason(CorpseFadeSkip.PatchedByThirdParty) + ";detail=Decay.Play has third-party patches");
     }
 
     // Any patch on Decay.Play can swallow/re-enter the call (DBO 1.5.0 does exactly that for unknown
@@ -496,6 +626,34 @@ internal static class CorpseFade
             return HasPatches(withDuration) || HasPatches(parameterless);
         }
         catch { return true; }
+    }
+
+    // Inspect the active postfix, not the installed package name. No patch or dependency is added.
+    private static string DelayedCallbackRisk()
+    {
+        try { return _frameRisk.Get(Time.frameCount, ReadCallbackRisk); }
+        catch { return PatchReadFailed; }
+    }
+
+    private static string ReadDelayedCallbackRisk()
+    {
+        try
+        {
+            var method = _skinnedInitialize ??= typeof(Decay).GetMethod(nameof(Decay.Initialize), new[] { typeof(SkinnedMeshRenderer),
+                typeof(Il2CppSystem.Collections.Generic.List<IRF.InstancedRenderFeature>) });
+            if (method == null) return PatchReadFailed;
+            var patches = Harmony.GetPatchInfo(method);
+            if (patches != null) foreach (var patch in patches.Postfixes)
+            {
+                var callback = patch.PatchMethod;
+                if (callback == null) return PatchReadFailed;
+                var type = callback.DeclaringType;
+                if (CorpseFadePolicy.IsDelayedDecayCallback(type?.Assembly.GetName().Name, type?.FullName, callback.Name))
+                    return "external-delayed-decay";
+            }
+            return null;
+        }
+        catch { return PatchReadFailed; }
     }
 
     private static bool HasPatches(MethodBase method)
@@ -535,6 +693,13 @@ internal static class CorpseFade
         try { return Time.unscaledTime; } catch { return 0f; }
     }
 
+    private static CorpseFadePoolFacts SamplePool()
+    {
+        CorpseFadePoolFacts facts = PoolFacts();
+        _lastPoolFacts = facts;
+        return facts;
+    }
+
     // Read-only pool observation: "the game never built the pool", "every instance is in use" and "the pool is at
     // its ceiling and cannot grow" are different diagnoses, and only the second one can change a moment later.
     // Nothing here creates, initialises or grows a pool, so the fallback stays exactly the shipped instant hide.
@@ -567,14 +732,14 @@ internal static class CorpseFade
     }
 
 
-    private static void LogSkip(CorpseFadeSkip skip, CorpseFadeHazard hazard, int scheduleId)
+    private static void LogSkip(CorpseFadeSkip skip, CorpseFadeHazard hazard, int scheduleId, string specificReason = null)
     {
         _skipped++;
         // Deliberate user intent (feature off, lobby, no renderer, off-scene) stays silent; only gates an
         // operator has to explain print a terminal line (F5: the terminal budget is its own allowance, so a
         // `fade=fallback` receipt can never spend it and the first MaxTerminalPerLevel corpses always print).
         if (!CorpseFadePolicy.IsReportable(skip)) return;
-        string reason = CorpseFadePolicy.Reason(skip);
+        string reason = specificReason ?? CorpseFadePolicy.Reason(skip);
         if (!Diagnostics.ClaimTerminal(scheduleId)) return;
         // 1.2.22: a refused input names the hazard, so "we never cloned this corpse" is one bounded line an
         // operator can reconcile with the instant hide that followed.

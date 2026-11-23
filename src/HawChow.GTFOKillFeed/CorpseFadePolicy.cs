@@ -144,6 +144,9 @@ internal readonly struct CorpseFadePoolFacts
             : free == 0 && used == 0 && count == 0 ? CorpseFadePoolState.ZeroInstances
             : free > 0 ? CorpseFadePoolState.Ready : CorpseFadePoolState.Exhausted;
 
+    internal static string DescribeLast(CorpseFadePoolFacts? last)
+        => last?.Describe() ?? "pool=not-sampled";
+
     internal string Describe()
         => "pool=" + (State == CorpseFadePoolState.Missing ? "missing"
                 : State == CorpseFadePoolState.ZeroInstances ? "zero-instances" : State == CorpseFadePoolState.Exhausted ? "exhausted" : "ready")
@@ -182,11 +185,12 @@ internal enum CorpseFadeSkip
 }
 
 // 1.2.16 (second real-machine pass): the corpse's OWN native Decay component path.
-// The reference mod (zose DeadBodyOptimization) never borrows a pooled instance and never validates a
-// renderer target: it reflects the game's own death-state dissolve, which is why it also works for corpses
-// that never got a ragdoll. We do not patch any ES_* type (those detours are known to trip a native
-// AccessViolation at load), so the same effect is reached by driving the `Decay` component the enemy prefab
-// already carries - verified read-only against the Test interop:
+// DBO 1.5.0 schedules the game's ES_Dead.DecayDelayed and intercepts Decay.Play; it does not directly
+// borrow or return an instance in its own code. The native coroutine can still use the game pool.
+// 1.2.34 changes that decision in ONE place only: when the pool is starved, CorpseFade.StartGameCoroutine may
+// start that same game coroutine through reflection (no Harmony patch, no ES_* detour - prior detours hit a
+// native AccessViolation at load). Everything else here still drives a verified Decay on the corpse itself.
+// Test interop exposes these members:
 //   CharacterDestruction.Decay: Initialize(SkinnedMeshRenderer|MeshRenderer, List<IRF.InstancedRenderFeature>),
 //   Play(float), Play(), Cleanup(), m_playing, m_targetRenderer, m_stopAction, m_autoCleanup.
 // Every refusal is a named state, exactly like CorpseFadeSkip, so a host log can say WHY the native path was
@@ -210,6 +214,17 @@ internal static class CorpseFadePolicy
     internal const float FadeSeconds = 0.5f;
     internal const int MaxConcurrentFades = 2;
     internal const int StopActionDeactivate = 1;
+
+    // Native Update advances normalized progress by deltaTime / duration. Shorten the rate parameter only;
+    // never reset progress, lengthen an existing dissolve or accept an unreadable/terminal timeline.
+    internal static bool TryGameDuration(float duration, float progress, out float shortened)
+    {
+        shortened = duration;
+        if (!KillPolicy.IsFinite(duration) || duration <= 0f || !KillPolicy.IsFinite(progress)
+            || progress < 0f || progress >= 1f) return false;
+        if ((1f - progress) * duration > FadeSeconds) shortened = FadeSeconds / (1f - progress);
+        return true;
+    }
 
     // A pool that answered "no free instance" is re-asked a small, fixed number of times inside the very
     // same frame. A poll only reads the pool and calls GetInstance(): nothing is created, cloned,
@@ -354,6 +369,11 @@ internal static class CorpseFadePolicy
     // component. 1.2.16 wrapped the log in `native != null`, which made `reason=no-decay-component` unreachable
     // while this predicate already said it was reportable.
     internal static bool ShouldLogNativeRefusal(CorpseFadeNativePath path) => IsReportableNative(path);
+    internal static bool IsDelayedDecayCallback(string assembly, string type, string method)
+        => assembly == "MemoryLeakFix" && type == "MemoryLeakFix.Patches.DecayPatches" && method == "AddEndCallback";
+    internal static string NativeStateReceipt(CorpseFadeNativePath path, int stopAction, bool autoCleanup, bool playing)
+        => path == CorpseFadeNativePath.NoComponent ? "component=not-found;stopAction=n/a;autoCleanup=n/a;playing=n/a"
+            : $"stopAction={stopAction};autoCleanup={autoCleanup};playing={playing}";
     internal static string Reason(CorpseFadeNativePath path) => path switch
     {
         CorpseFadeNativePath.Started => "started",

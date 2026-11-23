@@ -4,15 +4,13 @@ using System.IO;
 
 namespace KillFeed.Tests;
 
-// Authoring-tree (1.2.21) source gates, kept verbatim from the plugin's own tree, with two layout
-// adaptations only:
-//   - Root() anchors the public repo layout (src/GTFOKillFeed.csproj instead of GTFOKillFeed.csproj);
-//   - Read("src/HawChow.GTFOKillFeed/X.cs") resolves X.cs under src/HawChow.GTFOKillFeed, because the
-//     authoring tree keeps every source file at its repo root while this repo keeps them under src/.
-// Every behavioural assertion (scan-before-bind, registration keys, production wiring, end-of-life
-// invariants, master-switch literals) is the authoring version, unchanged.
+// Upstream (1.2.17) source gates, adapted to the hand-written tree: the company repo keeps one type per file
+// under src/HawChow.GTFOKillFeed with tab indentation and `base.Config.Bind(...)` call shapes that the
+// decompiler produced. The local tree is a flat, four-space-indented project that calls `Config.Bind(...)`
+// directly, so the FILE/PATH/INDENT constants are rewritten here - every behavioural assertion is kept.
 internal static class SourceGateTests
 {
+
 	internal static void Run()
 	{
 		ScanRunsBeforeBind();
@@ -28,19 +26,25 @@ internal static class SourceGateTests
 		DirectoryInfo directoryInfo = new DirectoryInfo(AppContext.BaseDirectory);
 		while (directoryInfo != null)
 		{
-			if (File.Exists(Path.Combine(directoryInfo.FullName, "src", "GTFOKillFeed.csproj")))
+			if (File.Exists(Path.Combine(directoryInfo.FullName, "GTFOKillFeed.csproj")))
 			{
 				return directoryInfo.FullName;
 			}
 			directoryInfo = directoryInfo.Parent;
 		}
-		throw new DirectoryNotFoundException("repo root not found from " + AppContext.BaseDirectory);
+		throw new DirectoryNotFoundException("project root not found from " + AppContext.BaseDirectory);
 	}
 
 	private static string Read(string relative)
 	{
-		// "src/HawChow.GTFOKillFeed/X.cs" -> src/HawChow.GTFOKillFeed/X.cs (public layout keeps the folder).
-		return File.ReadAllText(Path.Combine(Root(), relative.Replace('/', Path.DirectorySeparatorChar)));
+		// "src/HawChow.GTFOKillFeed/X.cs" -> "X.cs": the hand-written tree keeps every source file at the root.
+		string name = relative.Replace('\\', '/');
+		int slash = name.LastIndexOf('/');
+		if (slash >= 0)
+		{
+			name = name.Substring(slash + 1);
+		}
+		return File.ReadAllText(Path.Combine(Root(), name));
 	}
 
 	private static void ScanRunsBeforeBind()
@@ -178,24 +182,18 @@ internal static class SourceGateTests
 		}
 		Harness.Check("gate.corpse.end-of-life-block-found", num >= 0);
 		Harness.Check("gate.corpse.end-of-life-not-switch-gated", num >= 0 && !array[num].Contains("switches"));
-		int num2 = -1;
-		int num3 = -1;
-		if (num >= 0)
-		{
-			for (int j = num; j < Math.Min(array.Length, num + 20); j++)
-			{
-				if (array[j].Contains("ReleaseGibs(item);") && num2 < 0)
-				{
-					num2 = j;
-				}
-				if (array[j].Contains("CorpseFade.TryBegin(") && num3 < 0)
-				{
-					num3 = j;
-				}
-			}
-		}
-		Harness.Check("gate.corpse.releases-gibs-at-end", num2 > num, "endAt=" + num + ";release=" + num2);
-		Harness.Check("gate.corpse.native-dissolve-at-end", num3 > num, "endAt=" + num + ";fade=" + num3);
+		int deadline = text.IndexOf("if (age >= item.EndAt)", StringComparison.Ordinal);
+		int open = deadline < 0 ? -1 : text.IndexOf('{', deadline);
+		int end = open < 0 ? -1 : BlockEnd(text, open);
+		string block = end > open && open >= 0 ? text.Substring(open, end - open) : string.Empty;
+		int gibs = block.IndexOf("ReleaseGibs(item);", StringComparison.Ordinal);
+		int guard = block.IndexOf("if (!item.Fade.Resolved)", StringComparison.Ordinal);
+		int prep = block.IndexOf("CorpseFadePrep.Attempt(", StringComparison.Ordinal);
+		int play = block.IndexOf("CorpseFade.TryBegin(", StringComparison.Ordinal);
+		int hide = block.IndexOf("item.Model?.Hide();", StringComparison.Ordinal);
+		int recycle = block.IndexOf("item.Model?.RecyclePhysics();", StringComparison.Ordinal);
+		Harness.Check("gate.corpse.releases-gibs-at-end", gibs >= 0);
+		Harness.Check("gate.corpse.native-dissolve-at-end", gibs >= 0 && gibs < guard && guard < prep && prep < play && play < hide && hide < recycle);
 
 		int releaseAt = text.IndexOf("private static void ReleaseGibs(Corpse item)", StringComparison.Ordinal);
 		int releaseOpen = releaseAt < 0 ? -1 : text.IndexOf('{', releaseAt);
@@ -210,20 +208,20 @@ internal static class SourceGateTests
 		string captureBody = (captureAt > 0 && captureEnd > captureOpen) ? text.Substring(captureAt, captureEnd - captureAt) : string.Empty;
 		Harness.Check("gate.corpse.capture-gated-by-chunks", captureBody.Contains("ShouldTrackChunks(Current().ChunksActive)"));
 
+		// The hand-written tree keeps every switch check on one line, so the multi-line tab shape of the
+		// decompiled repo cannot be matched; the semantic requirement is "the parent switch alone decides".
 		Harness.Check("gate.corpse.queue-removal-still-parent-only",
 			text.Contains("if (!Plugin.Enabled.Value || !Plugin.CorpseEffects.Value) { RemoveQueued(item, \"effects-disabled\", now);"));
 		Harness.Check("gate.corpse.schedule-still-parent-only",
 			text.Contains("if (!Plugin.Enabled.Value || !Plugin.CorpseEffects.Value) return;"));
+		// The gib hook lives in CorpseFeedback.cs in the hand-written tree (upstream: GibActivatePatch.cs).
 		Harness.Check("gate.corpse.gib-capture-callback-kept", text.Contains("CorpseFeedback.CaptureGib(") || text.Contains("CaptureGib(gib)"));
 	}
 
-	// Layout-independent gate: every `Config.Bind` key under src/HawChow.GTFOKillFeed must be
-	// documented as a backticked `Section/Key` in docs/FEATURE-SWITCHES.md (§9 is generated by
-	// tools/feature_switch_inventory.py from the same sources).
 	private static void FeatureDocCoversEveryKey()
 	{
-		string text = Read("docs/FEATURE-SWITCHES.md");
-		string[] array = Directory.GetFiles(Path.Combine(Root(), "src", "HawChow.GTFOKillFeed"), "*.cs");
+		string text = Read("src/HawChow.GTFOKillFeed/README.md");
+		string[] array = Directory.GetFiles(Root(), "*.cs");
 		HashSet<string> hashSet = new HashSet<string>(StringComparer.Ordinal);
 		for (int i = 0; i < array.Length; i++)
 		{
@@ -243,6 +241,8 @@ internal static class SourceGateTests
 				list.Add(item);
 			}
 		}
+		// The hand-written README documents keys mostly as `Section/Key` in prose and tables; this gate reports
+		// the exact gap instead of hiding it, and the caller decides whether the doc needs the missing rows.
 		Harness.Check("gate.doc.every-key-documented", list.Count == 0, "missing=" + string.Join(",", list));
 		string[] array3 = new string[14] { "General/Enabled", "Input/ToggleKey", "Card/ShowEnemyMaxHealth", "KillIcon/Display", "HitMarker/Enabled", "HitSound/MuteVanillaIndicator", "DamageNumbers/Enabled", "DamageFx/PrismaticEnabled", "DamageFx/TiersEnabled", "DamageNumbers/ApproachEffect", "EnemyBar/Enabled", "EnemyBar/FocusOutlineEnabled", "TeammateMark/Enabled", "Corpse/FadeEffect" };
 		for (int l = 0; l < array3.Length; l++)

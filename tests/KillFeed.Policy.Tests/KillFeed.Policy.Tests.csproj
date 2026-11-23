@@ -6,16 +6,18 @@
     <Nullable>disable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
     <AssemblyName>KillFeed.Policy.Tests</AssemblyName>
-    <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
+    <GTFO_DIR Condition="'$(GTFO_DIR)' == ''">C:\Program Files (x86)\Steam\steamapps\common\GTFO</GTFO_DIR>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="../../src/HawChow.GTFOKillFeed/KillViewPolicy.cs" Link="KillViewPolicy.cs" />
-    <Compile Include="../../src/HawChow.GTFOKillFeed/KillOccluderRecovery.cs" Link="KillOccluderRecovery.cs" />
-    <Compile Include="../../src/HawChow.GTFOKillFeed/KillViewConfigApply.cs" Link="KillViewConfigApply.cs" />
+    <!-- Upstream (1.2.17) policy suite, linked against the hand-written tree: the three sources below are
+         verbatim copies of the same files the company build compiles into the plugin. -->
+    <Compile Include="..\..\KillViewPolicy.cs" Link="KillViewPolicy.cs" />
+    <Compile Include="..\..\KillOccluderRecovery.cs" Link="KillOccluderRecovery.cs" />
+    <Compile Include="..\..\KillViewConfigApply.cs" Link="KillViewConfigApply.cs" />
   </ItemGroup>
   <ItemGroup>
     <Reference Include="BepInEx.Core">
-      <HintPath>$(GTFO_DIR)/BepInEx/core/BepInEx.Core.dll</HintPath>
+      <HintPath>$(GTFO_DIR)\BepInEx\core\BepInEx.Core.dll</HintPath>
       <Private>true</Private>
     </Reference>
   </ItemGroup>

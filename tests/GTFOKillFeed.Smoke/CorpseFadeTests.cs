@@ -14,6 +14,18 @@ internal static class CorpseFadeTests
 {
     internal static void Run(Action<bool, string> check)
     {
+        check(CorpseFadePolicy.TryGameDuration(4f, 0f, out float shortDuration) && shortDuration == 0.5f,
+            "native reuse: shorten a long dissolve without a new play");
+        check(CorpseFadePolicy.TryGameDuration(4f, 0.5f, out shortDuration) && shortDuration == 1f,
+            "native reuse: normalized progress is retained and remaining time is capped at half a second");
+        check(CorpseFadePolicy.TryGameDuration(4f, 0.9f, out shortDuration) && shortDuration == 4f,
+            "native reuse: never lengthen or retime an already-fast remainder");
+        check(CorpseFadePolicy.TryGameDuration(0.1f, 0f, out shortDuration) && shortDuration == 0.1f,
+            "native reuse: short native playback is accepted without changing duration");
+        foreach (float badProgress in new[] { -1f, 1f, 2f, float.NaN, float.PositiveInfinity })
+            check(!CorpseFadePolicy.TryGameDuration(2f, badProgress, out _), "native reuse: invalid/completed progress must not authorize timing writes");
+        foreach (float badDuration in new[] { -1f, 0f, float.NaN, float.PositiveInfinity })
+            check(!CorpseFadePolicy.TryGameDuration(badDuration, 0f, out _), "native reuse: invalid native duration must not authorize timing writes");
         // ---- refusal policy: one veto is enough, always silent ------------------------------
         check(CorpseFadePolicy.ShouldAttempt(Plan()), "fade policy: a healthy corpse/renderer/pool pair may attempt a dissolve");
         check(!CorpseFadePolicy.ShouldAttempt(Plan(fadeEnabled: false)), "fade policy: Corpse/FadeEffect=false never touches the native pool");
@@ -107,6 +119,26 @@ internal static class CorpseFadeTests
             && !CorpseFadePolicy.NativeStopActionSafe(CorpseFadePolicy.StopActionDeactivate)
             && !CorpseFadePolicy.NativeStopActionSafe(CorpseFadePolicy.StopActionDestroy),
             "fade native: only StopAction.None (0) may be used on a component that lives on the corpse's own GameObject");
+        const string owner = "MemoryLeakFix", patchType = "MemoryLeakFix.Patches.DecayPatches", callback = "AddEndCallback";
+        check(CorpseFadePolicy.IsDelayedDecayCallback(owner, patchType, callback), "known skinned Initialize postfix retains old-generation playback state");
+        check(!CorpseFadePolicy.IsDelayedDecayCallback(null, patchType, callback) && !CorpseFadePolicy.IsDelayedDecayCallback(owner, "Other", callback)
+            && !CorpseFadePolicy.IsDelayedDecayCallback(owner, patchType, "Other"), "unrelated or absent postfix does not disable healthy fades");
+        var frameRisk = new CorpseFadeFrameRisk();
+        int probes = 0;
+        string liveRisk = null;
+        Func<string> read = () => { probes++; return liveRisk; };
+        check(frameRisk.Get(0, read) == null && probes == 1, "first eligible corpse reads the registry even at frame zero");
+        liveRisk = "external-delayed-decay";
+        check(frameRisk.Get(0, read) == null && probes == 1, "same frame shares the first registry read, including null");
+        bool allRefused = true;
+        for (int i = 0; i < 678; i++) allRefused &= frameRisk.Get(1, read) == liveRisk;
+        check(allRefused && probes == 2, "678 candidate checks in one frame share one positive registry read");
+        liveRisk = null;
+        check(frameRisk.Get(2, read) == null && probes == 3, "a later frame refreshes the actual registry state");
+        frameRisk = default;
+        check(frameRisk.Get(2, read) == null && probes == 4, "level reset discards the previous frame snapshot");
+        check(CorpseFadePolicy.NativeStateReceipt(CorpseFadeNativePath.NoComponent, -1, false, true) == "component=not-found;stopAction=n/a;autoCleanup=n/a;playing=n/a", "unsuccessful lookup never fabricates a playing observation");
+        check(CorpseFadePolicy.NativeStateReceipt(CorpseFadeNativePath.AlreadyPlaying, 0, true, true) == "stopAction=0;autoCleanup=True;playing=True", "present playing component keeps the actual observation");
         check(CorpseFadePolicy.Reason(CorpseFadeNativePath.NoComponent) == "no-decay-component"
             && CorpseFadePolicy.Reason(CorpseFadeNativePath.UnsafeComponent) == "unsafe-decay-component"
             && CorpseFadePolicy.Reason(CorpseFadeNativePath.AlreadyPlaying) == "decay-already-playing"
@@ -528,6 +560,10 @@ internal static class CorpseFadeTests
         var facts = new CorpseFadePoolFacts(CorpseFadePoolState.Exhausted, 0, 2, 2, 1, false, true);
         check(facts.Describe() == "pool=exhausted;free=0;used=2;count=2;min=1;dynamic=False;steal=True" && !facts.IsReady,
             "fade pool (1.2.26): free=0 used=count min dynamic is the receipt that tells 'at its ceiling, cannot grow' from 'busy for a moment'");
+        check(CorpseFadePoolFacts.DescribeLast(null) == "pool=not-sampled"
+            && CorpseFadePoolFacts.DescribeLast(CorpseFadePoolFacts.Missing) == CorpseFadePoolFacts.Missing.Describe()
+            && CorpseFadePoolFacts.DescribeLast(facts) == facts.Describe(),
+            "fade totals distinguish an unobserved pool from a sampled missing or exhausted pool");
         check(new CorpseFadePoolFacts(CorpseFadePoolState.Ready, 1, 0, 1, 1, false, true).IsReady,
             "fade pool (1.2.26): only a free instance makes the pool ready");
         var zero = CorpseFadePoolFacts.Classify(0, 0, 0);
