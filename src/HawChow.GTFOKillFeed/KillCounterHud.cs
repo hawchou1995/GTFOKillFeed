@@ -10,7 +10,7 @@ internal static class KillCounterHud
     private static readonly string[] Fallback = { "I", "II", "III" };
     private static readonly Color[] Tones = { KillHud.Ink, KillHud.Accent, new(0.83f, 0.42f, 0.36f) };
     private static readonly HashSet<string> Notes = new();
-    private static readonly int[] LastCounts = { -1, -1, -1 };
+    private static readonly int[] LastCounts = { int.MinValue, int.MinValue, int.MinValue };
     private static readonly string[] Texts = { "0", "0", "0" };
     private static readonly float[] Widths = new float[3];
     private static readonly GUIContent[] Contents = { new("0"), new("0"), new("0") };
@@ -120,8 +120,9 @@ internal static class KillCounterHud
             float width = KillCounterPolicy.GroupGap * 2f;
             for (int i = 0; i < 3; i++)
             {
-                int count = KillTracker.Counters.Get(Tiers[i]);
-                if (LastCounts[i] != count) { LastCounts[i] = count; Texts[i] = KillCounterTotals.Format(count); Contents[i].text = Texts[i]; }
+                int count = KillTracker.Counters.Get(Tiers[i], out bool estimated);
+                int stamp = estimated ? -count : count;
+                if (LastCounts[i] != stamp) { LastCounts[i] = stamp; Texts[i] = KillCounterTotals.Format(count, estimated); Contents[i].text = Texts[i]; }
                 Widths[i] = KillCounterPolicy.GroupWidth(_style.CalcSize(Contents[i]).x + 3f);
                 width += Widths[i];
             }

@@ -93,6 +93,13 @@ Check(Math.Abs(Field(scaled,"x")+Field(scaled,"width")-Field(scaled,"healthRight
 Compositor(layer,1920,1080);KillCounterHud.Tick(100.30f);KillCounterHud.Draw(new(),new(),new());
 Check(GUI.Icons==9 && Plugin.Instance.Log.Lines.Any(x=>x.Contains("screen=1920x1080;anchor=native-full-health-bar;camera=cellui-manual-verified") && x.Contains("counts=0/0/1")) && Transform.Writes==0,
     "reverse recovery reanchors without changing native objects or losing totals");
+layer=Setup(); KillTracker.Counters.EnterLevel();
+KillTracker.Counters.ObserveClientHit(1, 2, 3, 1000, 10f, 12f, null);
+KillTracker.Counters.ConfirmClientDeath(1, 2, 3, 1100, KillTier.Minor, false); Draw();
+Check(Receipt("cellui-manual-verified").Contains("counts=~1/0/0") && Transform.Writes==0,
+    "the actual HUD draw marks the first estimated tier without native writes");
+KillTracker.Counters.Add(KillTier.Minor, 1); Compositor(layer,1920,1080); KillCounterHud.Tick(100.30f); KillCounterHud.Draw(new(),new(),new());
+Check(Receipt("cellui-manual-scaled").Contains("counts=1/0/0"), "same-value exact upgrade removes the estimate marker");
 // Every refused chain must stay refused: there is no window-corner destination left anywhere.
 layer=Setup();Compositor(layer,1920,1080);Screen.width=2560;Screen.height=1080;Draw();
 Check(GUI.Icons==0 && Plugin.Instance.Log.Lines.Any(x=>x.Contains("held;reason=manual-canvas-target-size-mismatch")) && NoCorner(),

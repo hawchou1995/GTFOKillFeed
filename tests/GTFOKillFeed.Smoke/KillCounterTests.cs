@@ -30,6 +30,42 @@ internal static class KillCounterTests
         var ledger = new KillLedger();
         for (int i = 0; i < 4; i++) if (ledger.TryCredit(42)) totals.Add(KillTier.Elite);
         check(totals.Get(KillTier.Elite) == 1, "existing kill ledger admits one death exactly once");
+        var client = new KillCounterTotals();
+        var shot = new object();
+        check(!client.ObserveClientHit(11, 21, 31, 1000, 20, 25, null), "lobby cannot register a candidate");
+        client.EnterLevel();
+        check(!client.ConfirmClientDeath(90, 91, 92, 1001, KillTier.Minor, false), "death without a local hit never earns a count");
+        check(!client.ObserveClientHit(11, 21, 31, 1000, 20, 4.25f, shot)
+            && client.ObserveClientHit(11, 21, 31, 1010, 20, 16, shot)
+            && client.Get(KillTier.Minor) == 0, "same-shot pellets reach lethal without crediting a living target");
+        check(!client.ConfirmClientDeath(11, 22, 31, 1050, KillTier.Minor, false)
+            && !client.ConfirmClientDeath(11, 21, 32, 1050, KillTier.Minor, false), "network and damage identity must both match");
+        check(client.ConfirmClientDeath(11, 21, 31, 1080, KillTier.Minor, false)
+            && !client.ConfirmClientDeath(11, 21, 31, 1081, KillTier.Minor, false)
+            && client.Get(KillTier.Minor, out bool estimate) == 1 && estimate, "late confirmed death credits once and is labelled estimated");
+        client.Add(KillTier.Elite, 11);
+        check(client.Get(KillTier.Minor) == 0 && client.Get(KillTier.Elite, out estimate) == 1 && !estimate,
+            "exact settlement replaces the estimate even if the tier changed");
+        check(!client.ObserveClientHit(11, 21, 31, 1090, 20, 99, null), "same-life exact credit closes the fallback");
+        client.ForgetClientLife(11);
+        check(client.ObserveClientHit(11, 21, 31, 1100, 20, 25, shot)
+            && client.ConfirmClientDeath(11, 21, 31, 1130, KillTier.Elite, false)
+            && client.Get(KillTier.Elite, out estimate) == 2 && estimate, "recycled enemy gets a new credit, but keeps old totals");
+        client.ObserveClientHit(12, 22, 32, 2000, 20, 10, shot);
+        check(!client.ObserveClientHit(12, 22, 32, 2001, 20, 10, new object())
+            && !client.ConfirmClientDeath(12, 22, 32, 2020, KillTier.Minor, false), "different shots cannot create a lethal candidate");
+        client.ObserveClientHit(13, 23, 33, 2000, 20, 25, shot);
+        client.ObserveClientHit(13, 23, 33, 2500, 20, 25, shot);
+        check(!client.ConfirmClientDeath(13, 23, 33, 2001 + KillCounterTotals.ClientWindowMs, KillTier.Minor, false),
+            "an expired candidate cannot take a later kill; extra same-shot pellets do not refresh it");
+        client.ObserveClientHit(14, 24, 34, 2000, 20, 25, null);
+        check(!client.ConfirmClientDeath(14, 24, 34, 2050, KillTier.Minor, true), "known competing source vetoes a candidate");
+        client.ObserveClientHit(15, 25, 35, 2100, 20, 25, null); client.Add(KillTier.Minor, 15);
+        check(!client.ConfirmClientDeath(15, 25, 35, 2150, KillTier.Minor, false) && client.Get(KillTier.Minor, out estimate) == 1 && !estimate,
+            "exact-first path blocks an estimate for the same life");
+        client.ObserveClientHit(16, 26, 36, 2200, 20, 25, null); client.Reset(); client.EnterLevel();
+        check(!client.ConfirmClientDeath(16, 26, 36, 2250, KillTier.Minor, false) && client.Get(KillTier.Elite, out estimate) == 0 && !estimate,
+            "new expedition cannot consume the old life or retain estimates");
         foreach (float screen in new[] { 1280f, 1920f, 2560f, 3440f, 3840f })
         foreach (float width in new[] { 138f, 250f, 400f })
         {
@@ -75,7 +111,7 @@ internal static class KillCounterTests
         if (root == null) throw new InvalidOperationException("counter source root missing");
         string tracker = File.ReadAllText(Path.Combine(root.FullName, "KillTracker.cs"));
         int build = tracker.IndexOf("KillPresentation presentation = KillPresentationPolicy.Build", StringComparison.Ordinal);
-        int add = tracker.IndexOf("Counters.Add(presentation.Tier)", StringComparison.Ordinal);
+        int add = tracker.IndexOf("Counters.Add(presentation.Tier,", StringComparison.Ordinal);
         int sound = tracker.IndexOf("HitSound.OnLocalKill", StringComparison.Ordinal);
         check(build >= 0 && add > build && sound > add && tracker.Split("Counters.Add(").Length == 2,
             "counter is wired once after presentation tier and before optional effects");

@@ -158,6 +158,13 @@ internal static class ShotgunDamageNumberCapture
         catch { return 0L; }
     }
 
+    // Pure identity only: no dependence on number visibility, merge settings or the asynchronous drawing window.
+    internal static ShotgunDamageNumberScope CurrentLocalVolley(ulong shooterLookup)
+    {
+        var shot = _scopeStack?.Current;
+        return shooterLookup != 0 && shot != null && shot.ShooterLookup == shooterLookup ? shot : null;
+    }
+
     internal static bool IsActiveFireCategory(uint gearCategoryId, DamageOrigin origin, ulong shooterLookup = 0UL,
         bool nestedSameShot = false)
     {

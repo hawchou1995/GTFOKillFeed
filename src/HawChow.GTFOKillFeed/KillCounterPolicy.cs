@@ -3,20 +3,99 @@ using System.Globalization;
 
 namespace HawChow.GTFOKillFeed;
 
-// Updated only after KillTracker's existing local lethal-credit ledger admits a kill.
+// The host's lethal credit stays exact. Client estimates only affect these HUD totals.
 internal sealed class KillCounterTotals
 {
+    internal const long ClientWindowMs = 750;
     private readonly object _gate = new();
-    private readonly int[] _counts = new int[3];
-    internal void Add(KillTier tier)
+    private readonly int[] _counts = new int[3], _estimates = new int[3];
+    private readonly System.Collections.Generic.Dictionary<long, ClientLife> _client = new();
+    private bool _inLevel;
+
+    private struct ClientLife
+    {
+        internal long Damage, HitAt;
+        internal ushort NetworkId;
+        internal object Volley;
+        internal float Health, Dealt;
+        internal KillTier Tier;
+        internal bool Closed, Estimated;
+    }
+
+    internal void Add(KillTier tier, long agent = 0)
     {
         int i = (int)tier;
-        if (i < 0 || i >= 3) return;
-        lock (_gate) { if (_counts[i] < int.MaxValue) _counts[i]++; }
+        if ((uint)i >= 3) return;
+        lock (_gate)
+        {
+            if (agent != 0 && _client.TryGetValue(agent, out var life))
+            {
+                if (life.Estimated) _estimates[(int)life.Tier]--;
+                life.Estimated = false; life.Closed = true; life.Volley = null;
+                _client[agent] = life;
+            }
+            if (_counts[i] < int.MaxValue) _counts[i]++;
+        }
     }
-    internal int Get(KillTier tier) { lock (_gate) { return (uint)(int)tier < 3 ? _counts[(int)tier] : 0; } }
-    internal void Reset() { lock (_gate) { Array.Clear(_counts, 0, _counts.Length); } }
-    internal static string Format(int value) => Math.Max(0, value).ToString(CultureInfo.InvariantCulture);
+
+    internal bool ObserveClientHit(long agent, long damage, ushort networkId, long now, float health, float dealt, object volley)
+    {
+        if (agent == 0 || damage == 0 || !float.IsFinite(health) || health <= 0 || !float.IsFinite(dealt) || dealt <= 0) return false;
+        lock (_gate)
+        {
+            if (!_inLevel) return false;
+            bool known = _client.TryGetValue(agent, out var life);
+            bool same = known && life.Damage == damage && life.NetworkId == networkId;
+            if (same && life.Closed) return false;
+            if (!same || volley == null || !ReferenceEquals(life.Volley, volley) || life.Health != health
+                || now < life.HitAt || now - life.HitAt > ClientWindowMs)
+                life = new ClientLife { Damage = damage, NetworkId = networkId, Health = health, Volley = volley };
+            // Keep the time of the first lethal candidate; extra pellets cannot extend the death window.
+            if (life.Dealt < life.Health) life.HitAt = now;
+            life.Dealt = (float)Math.Min(health, (double)life.Dealt + dealt);
+            _client[agent] = life;
+            return life.Dealt >= health;
+        }
+    }
+
+    internal bool ConfirmClientDeath(long agent, long damage, ushort networkId, long now, KillTier tier, bool competingSource)
+    {
+        int i = (int)tier;
+        lock (_gate)
+        {
+            if (!_inLevel || (uint)i >= 3 || !_client.TryGetValue(agent, out var life) || life.Closed
+                || life.Damage != damage || life.NetworkId != networkId) return false;
+            double age = (double)now - life.HitAt;
+            bool credit = !competingSource && age >= 0 && age <= ClientWindowMs && life.Dealt >= life.Health;
+            life.Closed = true; life.Volley = null; life.Tier = tier;
+            life.Estimated = credit && _estimates[i] < int.MaxValue;
+            if (life.Estimated) _estimates[i]++;
+            _client[agent] = life;
+            return life.Estimated;
+        }
+    }
+
+    internal void ForgetClientLife(long agent) { lock (_gate) _client.Remove(agent); }
+    internal void EnterLevel() { lock (_gate) _inLevel = true; }
+    internal int Get(KillTier tier) => Get(tier, out _);
+    internal int Get(KillTier tier, out bool estimated)
+    {
+        int i = (int)tier;
+        lock (_gate)
+        {
+            estimated = (uint)i < 3 && _estimates[i] != 0;
+            return (uint)i < 3 ? (int)Math.Min(int.MaxValue, (long)_counts[i] + _estimates[i]) : 0;
+        }
+    }
+    internal void Reset()
+    {
+        lock (_gate)
+        {
+            _inLevel = false; _client.Clear();
+            Array.Clear(_counts, 0, _counts.Length); Array.Clear(_estimates, 0, _estimates.Length);
+        }
+    }
+    internal static string Format(int value, bool estimated = false) => (estimated && value > 0 ? "~" : "") + Math.Max(0, value).ToString(CultureInfo.InvariantCulture);
 }
 
 internal readonly struct KillCounterLayout

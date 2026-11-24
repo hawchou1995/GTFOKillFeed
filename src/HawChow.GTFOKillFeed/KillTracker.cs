@@ -15,6 +15,7 @@ internal sealed class DamageRoot
     internal IntPtr EnemyPointer;
     internal float HealthBefore;
     internal bool LocalSource, LimbObserved, Weakspot, Credited, HitRecorded, HasValue, Processed;
+    internal bool ClientHitSeen, SourceKnown;
     internal ulong PlayerLookup;
     internal HitKind Kind;
     // 1.2.19: the entry this root came from. Written once when the root is created and only ever PROMOTED
@@ -78,6 +79,7 @@ internal static class KillTracker
     private static readonly System.Collections.Generic.Dictionary<long, long> _identityByAgent = new();
     // Its own receipts must not spend the 12-line feedback allowance that explains damage routing.
     private static readonly RepeatedLogBudget LedgerLogBudget = new();
+    private static int _clientCandidateLogs, _clientCreditLogs;
 
     // 1.2.24: the damage root of the settlement this thread is inside right now (null outside one). The stagger receipt
     // hook uses it to prove that OnTakeDamage was called from THIS settlement, on THIS thread, for THIS enemy.
@@ -89,6 +91,7 @@ internal static class KillTracker
             Plugin.Instance?.Log.LogInfo($"[KILLFEED] diagnostics=summary;seen={KillLogBudget.Seen};printed={KillLogBudget.Printed};suppressed={KillLogBudget.Suppressed};policy=first-3-and-every-100-per-kind");
         KillLogBudget.Reset();
         Counters.Reset(); KillCounterHud.Reset();
+        _clientCandidateLogs = _clientCreditLogs = 0;
         Ledger.Reset(); _identityByAgent.Clear(); LedgerLogBudget.Reset(); Cards.Clear(); Bursts.Clear(); _active = null; _originScope = null;
         // 1.2.19: the feedback allowance is per LEVEL too (12 lines, then one exhaustion receipt), not per process.
         _diagnosticBudget = FeedbackLines;
@@ -116,6 +119,7 @@ internal static class KillTracker
             long damage = 0;
             try { if (agent.Damage != null) damage = agent.Damage.Pointer.ToInt64(); } catch { }
             long agentKey = agent.Pointer.ToInt64();
+            Counters.ForgetClientLife(agentKey);
             _identityByAgent.TryGetValue(agentKey, out long remembered);
             _identityByAgent.Remove(agentKey);
             long identity = KillLedger.IdentityForRelease(damage, remembered);
@@ -203,6 +207,7 @@ internal static class KillTracker
                 EnemyPointer = pointer,
                 HealthBefore = enemy != null ? enemy.Health : 0f,
                 LocalSource = source.Local,
+                SourceKnown = sourceAgent != null,
                 PlayerLookup = source.Lookup,
                 Position = position,
                 Direction = direction,
@@ -364,7 +369,7 @@ internal static class KillTracker
             Plugin.KillHeavyHealthThreshold != null ? Plugin.KillHeavyHealthThreshold.Value : KillPolicy.DefaultHeavyHealthThreshold);
         KillPresentation presentation = KillPresentationPolicy.Build(decision.Kind, enemy.HealthMax, tiers,
             IsFlyer(agent), HasArmorLimb(enemy));
-        Counters.Add(presentation.Tier);
+        Counters.Add(presentation.Tier, agent != null ? agent.Pointer.ToInt64() : 0);
         HitSound.OnLocalKill(presentation.Tier, presentation.Flight);
         // Head-top kill icon: the world anchor is snapshotted ONCE, right here, while this enemy is still the
         // object that just died, and the icon freezes on it (1.2.16). The corpse may sink, be hidden or be
@@ -396,17 +401,23 @@ internal static class KillTracker
         if (KillLogBudget.TryLog(decision.Kind == KillKind.Weakspot ? "classification=WEAKSPOT" : "classification=NORMAL"))
             Plugin.Instance.Log.LogInfo($"[KILLFEED] classification={(decision.Kind == KillKind.Weakspot ? "WEAKSPOT" : "NORMAL")};tier={presentation.Tier};flight={presentation.Flight};healthMax={enemy.HealthMax:0.##};enemyId={agent.EnemyDataID};rawName={rawName};displayName={displayName};distance={card.DistanceText};limbObserved={root.LimbObserved}.");
     }
+    private static KillTierBoundaries CounterTierBoundaries() => KillPolicy.ResolveTierBoundaries(
+        Plugin.KillMinorHealthThreshold != null ? Plugin.KillMinorHealthThreshold.Value : KillDefaults.MinorHealthThreshold,
+        Plugin.KillHeavyHealthThreshold != null ? Plugin.KillHeavyHealthThreshold.Value : KillPolicy.DefaultHeavyHealthThreshold);
     internal static void CompleteFromAgent(EnemyAgent agent)
     {
-        if (agent?.Damage == null) return;
+        var enemy = agent?.Damage;
+        if (enemy == null) return;
         if (_active?.Root == null)
         {
-            // Bounded: a co-op death that is not ours is normal, so name it without spending the routing budget.
+            if (ConfirmClientDeath(agent, enemy, null)) return;
+            // An unmatched death is not a kill attribution; do not spend the damage-routing log budget.
             if (LedgerLogBudget.TryLog("completion-without-settlement"))
                 Plugin.Instance?.Log.LogInfo("[KILLFEED] kill=unsettled;reason=no-active-damage-settlement;note=death-hook-outside-our-settlement");
             return;
         }
-        if (_active.Root.EnemyPointer == agent.Damage.Pointer) Complete(agent.Damage, _active);
+        if (_active.Root.EnemyPointer == enemy.Pointer) Complete(enemy, _active);
+        ConfirmClientDeath(agent, enemy, _active.Root);
     }
     internal static void EnemyDied(EnemyAgent agent)
     {
@@ -519,7 +530,7 @@ internal static class KillTracker
     }
     internal static void ObserveState(eGameStateName state)
     {
-        if (state == eGameStateName.InLevel) { CorpseFeedback.EnterLevel(); TeammateMarks.EnterLevel(); KillIconOccluders.EnterLevel(); return; }
+        if (state == eGameStateName.InLevel) { Counters.EnterLevel(); CorpseFeedback.EnterLevel(); TeammateMarks.EnterLevel(); KillIconOccluders.EnterLevel(); return; }
         Reset("state:" + state);
     }
     internal static void LogPatchReceipts(Harmony harmony, ManualLogSource log)
@@ -597,11 +608,46 @@ internal static class KillTracker
     {
         try { action(); } catch (Exception error) { Note("feedback skipped: " + error.Message); }
     }
-    internal static Exception EndLimb(Dam_EnemyDamageLimb limb, DamageScope scope, Exception error)
+    internal static Exception EndLimb(Dam_EnemyDamageLimb limb, DamageScope scope, Exception error, bool ranOriginal)
     {
         Dam_EnemyDamageBase enemy = null;
         try { enemy = limb?.m_base; } catch { }
-        return End(enemy, scope, error);
+        Exception result = End(enemy, scope, error);
+        if (ranOriginal && error == null) ObserveClientHit(enemy, scope?.Root);
+        return result;
+    }
+    private static void ObserveClientHit(Dam_EnemyDamageBase enemy, DamageRoot root)
+    {
+        if (root == null || !root.LocalSource || root.PlayerLookup == 0 || !root.HasValue || !root.LimbObserved
+            || root.Processed || root.Credited || root.ClientHitSeen || root.HealthBefore <= 0 || root.Damage <= 0) return;
+        root.ClientHitSeen = true;
+        try
+        {
+            if (SNetwork.SNet.IsMaster || enemy == null || enemy.Pointer != root.EnemyPointer) return;
+            var agent = enemy.Owner;
+            if (agent == null || !agent.Alive) return;
+            var volley = root.Origin == DamageOrigin.Bullet ? ShotgunDamageNumberCapture.CurrentLocalVolley(root.PlayerLookup) : null;
+            bool candidate = Counters.ObserveClientHit(agent.Pointer.ToInt64(), enemy.Pointer.ToInt64(), agent.GlobalID,
+                Environment.TickCount64, root.HealthBefore, root.Damage, volley);
+            if (candidate && System.Threading.Interlocked.Increment(ref _clientCandidateLogs) <= 3)
+                Plugin.Instance?.Log.LogInfo($"[KILLCOUNTER] client=candidate;enemyId={agent.EnemyDataID};healthBefore={root.HealthBefore:0.##};hit={root.Damage:0.##};volley={volley != null}");
+        }
+        catch (Exception error) { if (System.Threading.Interlocked.Increment(ref _clientCandidateLogs) <= 3) Plugin.Instance?.Log.LogInfo("[KILLCOUNTER] client=capture-unavailable;error=" + error.GetType().Name); }
+    }
+    private static bool ConfirmClientDeath(EnemyAgent agent, Dam_EnemyDamageBase enemy, DamageRoot active)
+    {
+        try
+        {
+            if (SNetwork.SNet.IsMaster || GameStateManager.CurrentStateName != eGameStateName.InLevel || enemy == null) return false;
+            KillTier tier = KillPolicy.ClassifyTier(enemy.HealthMax, CounterTierBoundaries());
+            bool competing = active != null && active.EnemyPointer == enemy.Pointer && active.SourceKnown && !active.LocalSource;
+            if (!Counters.ConfirmClientDeath(agent.Pointer.ToInt64(), enemy.Pointer.ToInt64(), agent.GlobalID,
+                Environment.TickCount64, tier, competing)) return false;
+            if (System.Threading.Interlocked.Increment(ref _clientCreditLogs) <= 3)
+                Plugin.Instance?.Log.LogInfo($"[KILLCOUNTER] client=credited;estimated=true;source=EnemyAgent.OnDead;tier={tier};enemyId={agent.EnemyDataID}");
+            return true;
+        }
+        catch (Exception error) { if (System.Threading.Interlocked.Increment(ref _clientCreditLogs) <= 3) Plugin.Instance?.Log.LogInfo("[KILLCOUNTER] client=confirmation-unavailable;error=" + error.GetType().Name); return false; }
     }
     private static void Note(string message)
     {
@@ -618,14 +664,14 @@ internal static class LocalBulletPatch
 {
     [HarmonyPrefix] private static void Prefix(Dam_EnemyDamageLimb __instance, float dam, Agent sourceAgent, Vector3 position, Vector3 direction, float precisionMulti, bool allowDirectionalBonus, uint gearCategoryId, out DamageScope __state)
         => __state = KillTracker.Guard(() => KillTracker.BeginLimb(__instance, dam, sourceAgent, position, direction, precisionMulti, allowDirectionalBonus, false, 1f, 1f, gearCategoryId));
-    [HarmonyFinalizer] private static Exception Finalizer(Dam_EnemyDamageLimb __instance, DamageScope __state, Exception __exception) => KillTracker.EndLimb(__instance, __state, __exception);
+    [HarmonyFinalizer] private static Exception Finalizer(Dam_EnemyDamageLimb __instance, DamageScope __state, Exception __exception, bool __runOriginal) => KillTracker.EndLimb(__instance, __state, __exception, __runOriginal);
 }
 [HarmonyPatch(typeof(Dam_EnemyDamageLimb), "MeleeDamage")]
 internal static class LocalMeleePatch
 {
     [HarmonyPrefix] private static void Prefix(Dam_EnemyDamageLimb __instance, float dam, Agent sourceAgent, Vector3 position, Vector3 direction, float precisionMulti, float backstabberMulti, float sleeperMulti, uint gearCategoryId, out DamageScope __state)
         => __state = KillTracker.Guard(() => KillTracker.BeginLimb(__instance, dam, sourceAgent, position, direction, precisionMulti, true, true, backstabberMulti, sleeperMulti, gearCategoryId));
-    [HarmonyFinalizer] private static Exception Finalizer(Dam_EnemyDamageLimb __instance, DamageScope __state, Exception __exception) => KillTracker.EndLimb(__instance, __state, __exception);
+    [HarmonyFinalizer] private static Exception Finalizer(Dam_EnemyDamageLimb __instance, DamageScope __state, Exception __exception, bool __runOriginal) => KillTracker.EndLimb(__instance, __state, __exception, __runOriginal);
 }
 [HarmonyPatch(typeof(Dam_EnemyDamageBase), "ReceiveBulletDamage")]
 internal static class EnemyBulletDamagePatch
@@ -672,7 +718,7 @@ internal static class EnemyAgentDeathPatch
 [HarmonyPatch(typeof(EnemyAgent), "Setup")]
 internal static class EnemySpawnPatch
 {
-    [HarmonyPrefix] private static void Prefix(EnemyAgent __instance) => KillTracker.GuardAction(() => { CorpseFeedback.Restore(__instance, "enemy-setup"); KillIconOccluders.Register(__instance); KillTracker.Spawned(__instance.Damage); });
+    [HarmonyPrefix] private static void Prefix(EnemyAgent __instance) => KillTracker.GuardAction(() => { if (__instance != null) KillTracker.Counters.ForgetClientLife(__instance.Pointer.ToInt64()); CorpseFeedback.Restore(__instance, "enemy-setup"); KillIconOccluders.Register(__instance); KillTracker.Spawned(__instance.Damage); });
 }
 [HarmonyPatch(typeof(GameStateManager), "DoChangeState")]
 internal static class KillFeedStatePatch
